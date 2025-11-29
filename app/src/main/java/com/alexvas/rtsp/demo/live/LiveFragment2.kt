@@ -9,8 +9,8 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.core.net.toUri
 import androidx.fragment.app.Fragment
+import com.alexvas.rtsp.codec.AudioDecodeThread
 import com.alexvas.rtsp.demo.databinding.FragmentLive2Binding
-import com.alexvas.rtsp.widget.RtspDataListener
 import com.alexvas.rtsp.widget.RtspPlayer
 
 @SuppressLint("LogNotTimber")
@@ -56,16 +56,18 @@ class LiveFragment2 : Fragment() {
         rtspPlayer!!.videoFrameRateStabilization = true
         rtspPlayer!!.audioPlaybackEnabled = true
         rtspPlayer!!.init(uri.toUri())
-        rtspPlayer!!.setDataListener(object : RtspDataListener {
-            override fun onRtspDataAudioSampleReceived(
+        rtspPlayer!!.audioBufferListener = object : AudioDecodeThread.AudioBufferListener {
+            override fun onAudioBufferAvailable(
                 data: ByteArray,
                 offset: Int,
                 length: Int,
-                timestamp: Long
+                presentationTimeUs: Long,
+                sampleRate: Int,
+                channelCount: Int
             ) {
 
             }
-        })
+        }
         rtspPlayer!!.start(requestVideo = true, requestAudio = true, requestApplication = false)
     }
 
