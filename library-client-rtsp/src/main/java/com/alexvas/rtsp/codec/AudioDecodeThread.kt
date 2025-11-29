@@ -6,20 +6,44 @@ import android.util.Log
 import java.nio.ByteBuffer
 
 
-class AudioDecodeThread (
-        private val mimeType: String,
-        private val sampleRate: Int,
-        private val channelCount: Int,
-        private val codecConfig: ByteArray?,
-        private val audioFrameQueue: AudioFrameQueue) : Thread() {
+class AudioDecodeThread(
+    private val mimeType: String,
+    private val sampleRate: Int,
+    private val channelCount: Int,
+    private val codecConfig: ByteArray?,
+    private val audioFrameQueue: AudioFrameQueue,
+    private val initialPlayAudio: Boolean = true,
+) : Thread() {
 
     private var isRunning = true
+    @Volatile private var playAudio = initialPlayAudio
+    @Volatile private var audioTrack: AudioTrack? = null
 
     fun stopAsync() {
         if (DEBUG) Log.v(TAG, "stopAsync()")
         isRunning = false
         // Wake up sleep() code
         interrupt()
+    }
+
+    fun setPlayAudioEnabled(enabled: Boolean) {
+        playAudio = enabled
+        audioTrack?.let { track ->
+            try {
+                if (enabled) {
+                    if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                        track.play()
+                    }
+                } else {
+                    if (track.playState == AudioTrack.PLAYSTATE_PLAYING) {
+                        track.pause()
+                        track.flush()
+                    }
+                }
+            } catch (t: Throwable) {
+                Log.w(TAG, "Unable to toggle audio playback state", t)
+            }
+        }
     }
 
     override fun run() {
@@ -100,7 +124,7 @@ class AudioDecodeThread (
         val outAudio = AudioFormat.ENCODING_PCM_16BIT
         val bufferSize = AudioTrack.getMinBufferSize(sampleRate, outChannel, outAudio)
 //      Log.i(TAG, "sampleRate: $sampleRate, bufferSize: $bufferSize".format(sampleRate, bufferSize))
-        val audioTrack = AudioTrack(
+        val track = AudioTrack(
                 AudioAttributes.Builder()
                         .setUsage(AudioAttributes.USAGE_MEDIA)
                         .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
@@ -113,7 +137,10 @@ class AudioDecodeThread (
                 bufferSize,
                 AudioTrack.MODE_STREAM,
                 0)
-        audioTrack.play()
+        audioTrack = track
+        if (playAudio) {
+            track.play()
+        }
 
         val bufferInfo = MediaCodec.BufferInfo()
         while (isRunning) {
@@ -159,12 +186,14 @@ class AudioDecodeThread (
                         if (outIndex >= 0) {
                             val byteBuffer: ByteBuffer? = decoder.getOutputBuffer(outIndex)
 
-                            val chunk = ByteArray(bufferInfo.size)
-                            byteBuffer?.get(chunk)
+                            val chunk = if (bufferInfo.size > 0) ByteArray(bufferInfo.size) else ByteArray(0)
+                            if (chunk.isNotEmpty()) {
+                                byteBuffer?.get(chunk)
+                            }
                             byteBuffer?.clear()
 
-                            if (chunk.isNotEmpty()) {
-                                audioTrack.write(chunk, 0, chunk.size)
+                            if (chunk.isNotEmpty() && playAudio) {
+                                track.write(chunk, 0, chunk.size)
                             }
                             decoder.releaseOutputBuffer(outIndex, false)
                         }
@@ -180,8 +209,13 @@ class AudioDecodeThread (
                 break
             }
         }
-        audioTrack.flush()
-        audioTrack.release()
+        try {
+            track.pause()
+        } catch (_: Throwable) {
+        }
+        track.flush()
+        track.release()
+        audioTrack = null
 
         try {
             decoder.stop()
