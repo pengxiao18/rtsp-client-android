@@ -13,10 +13,23 @@ class AudioDecodeThread(
     private val codecConfig: ByteArray?,
     private val audioFrameQueue: AudioFrameQueue,
     private val initialPlayAudio: Boolean = true,
+    private val initialBufferListener: AudioBufferListener? = null,
 ) : Thread() {
+
+    interface AudioBufferListener {
+        fun onAudioBufferAvailable(
+            data: ByteArray,
+            offset: Int,
+            length: Int,
+            presentationTimeUs: Long,
+            sampleRate: Int,
+            channelCount: Int,
+        ) {}
+    }
 
     private var isRunning = true
     @Volatile private var playAudio = initialPlayAudio
+    @Volatile private var bufferListener: AudioBufferListener? = initialBufferListener
     @Volatile private var audioTrack: AudioTrack? = null
 
     fun stopAsync() {
@@ -44,6 +57,10 @@ class AudioDecodeThread(
                 Log.w(TAG, "Unable to toggle audio playback state", t)
             }
         }
+    }
+
+    fun setAudioBufferListener(listener: AudioBufferListener?) {
+        bufferListener = listener
     }
 
     override fun run() {
@@ -192,8 +209,18 @@ class AudioDecodeThread(
                             }
                             byteBuffer?.clear()
 
-                            if (chunk.isNotEmpty() && playAudio) {
-                                track.write(chunk, 0, chunk.size)
+                            if (chunk.isNotEmpty()) {
+                                bufferListener?.onAudioBufferAvailable(
+                                    chunk,
+                                    0,
+                                    chunk.size,
+                                    bufferInfo.presentationTimeUs,
+                                    sampleRate,
+                                    channelCount
+                                )
+                                if (playAudio) {
+                                    track.write(chunk, 0, chunk.size)
+                                }
                             }
                             decoder.releaseOutputBuffer(outIndex, false)
                         }

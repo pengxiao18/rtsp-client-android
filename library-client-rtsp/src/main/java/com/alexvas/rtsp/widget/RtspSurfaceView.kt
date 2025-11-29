@@ -9,6 +9,7 @@ import android.view.SurfaceView
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.container.NalUnitUtil
+import com.alexvas.rtsp.codec.AudioDecodeThread.AudioBufferListener
 import com.alexvas.rtsp.codec.VideoDecodeThread.DecoderType
 import com.alexvas.rtsp.codec.VideoDecoderSurfaceThread
 import com.alexvas.rtsp.widget.RtspProcessor.Statistics
@@ -74,6 +75,11 @@ open class RtspSurfaceView: SurfaceView {
     var audioPlaybackEnabled: Boolean
         get() = rtspProcessor.audioPlaybackEnabled
         set(value) { rtspProcessor.audioPlaybackEnabled = value }
+
+    /** Listener receiving decoded PCM audio buffers. */
+    var audioBufferListener: AudioBufferListener?
+        get() = rtspProcessor.audioBufferListener
+        set(value) { rtspProcessor.audioBufferListener = value }
 
     private val surfaceCallback = object: SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) {

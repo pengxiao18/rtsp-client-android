@@ -3,6 +3,7 @@ package com.alexvas.rtsp.widget
 import android.content.Context
 import android.net.Uri
 import android.view.Surface
+import com.alexvas.rtsp.codec.AudioDecodeThread.AudioBufferListener
 import com.alexvas.rtsp.codec.VideoDecodeThread.DecoderType
 import com.alexvas.rtsp.codec.VideoDecoderSurfaceThread
 import com.alexvas.rtsp.widget.RtspProcessor.Statistics
@@ -83,6 +84,11 @@ class RtspPlayer(
     var audioPlaybackEnabled: Boolean
         get() = rtspProcessor.audioPlaybackEnabled
         set(value) { rtspProcessor.audioPlaybackEnabled = value }
+
+    /** Listener receiving decoded PCM audio buffers. */
+    var audioBufferListener: AudioBufferListener?
+        get() = rtspProcessor.audioBufferListener
+        set(value) { rtspProcessor.audioBufferListener = value }
 
     fun init(
         uri: Uri,
