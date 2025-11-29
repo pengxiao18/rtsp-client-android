@@ -119,6 +119,15 @@ class RtspProcessor(
         }
 
     /**
+     * Controls whether decoded audio should be rendered to the platform AudioTrack.
+     */
+    var audioPlaybackEnabled: Boolean = true
+        set(value) {
+            field = value
+            audioDecodeThread?.setPlayAudioEnabled(value)
+        }
+
+    /**
      * Status listener for getting RTSP event updates.
      */
     var statusListener: RtspStatusListener? = null
@@ -425,15 +434,23 @@ class RtspProcessor(
             )
             videoDecodeThread!!.apply {
                 name = "RTSP video thread [${getUriName()}]"
+                setVideoFrameRateStabilization(videoFrameRateStabilization)
                 start()
             }
         }
         if (audioMimeType.isNotEmpty() /*&& checkAudio!!.isChecked*/) {
             Log.i(TAG, "Starting audio decoder with mime type \"$audioMimeType\"")
             audioDecodeThread = AudioDecodeThread(
-                audioMimeType, audioSampleRate, audioChannelCount, audioCodecConfig, audioFrameQueue)
+                audioMimeType,
+                audioSampleRate,
+                audioChannelCount,
+                audioCodecConfig,
+                audioFrameQueue,
+                initialPlayAudio = audioPlaybackEnabled,
+            )
             audioDecodeThread!!.apply {
                 name = "RTSP audio thread [${getUriName()}]"
+                setPlayAudioEnabled(audioPlaybackEnabled)
                 start()
             }
         }
