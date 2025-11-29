@@ -70,6 +70,11 @@ open class RtspSurfaceView: SurfaceView {
         get() = rtspProcessor.videoFrameRateStabilization
         set(value) { rtspProcessor.videoFrameRateStabilization = value }
 
+    /** Controls whether decoded audio should be rendered locally. */
+    var audioPlaybackEnabled: Boolean
+        get() = rtspProcessor.audioPlaybackEnabled
+        set(value) { rtspProcessor.audioPlaybackEnabled = value }
+
     private val surfaceCallback = object: SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) {
             if (DEBUG) Log.v(TAG, "surfaceCreated()")
