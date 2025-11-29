@@ -128,6 +128,14 @@ class RtspProcessor(
         }
 
     /**
+     * Listener for receiving decoded PCM audio buffers.
+     */
+    var audioBufferListener: AudioDecodeThread.AudioBufferListener? = null
+        set(value) {
+            field = value
+            audioDecodeThread?.setAudioBufferListener(value)
+        }
+    /**
      * Status listener for getting RTSP event updates.
      */
     var statusListener: RtspStatusListener? = null
@@ -447,10 +455,12 @@ class RtspProcessor(
                 audioCodecConfig,
                 audioFrameQueue,
                 initialPlayAudio = audioPlaybackEnabled,
+                initialBufferListener = audioBufferListener,
             )
             audioDecodeThread!!.apply {
                 name = "RTSP audio thread [${getUriName()}]"
                 setPlayAudioEnabled(audioPlaybackEnabled)
+                setAudioBufferListener(audioBufferListener)
                 start()
             }
         }
