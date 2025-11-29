@@ -496,8 +496,12 @@ class RtspProcessor(
 
     fun stop() {
         if (DEBUG) Log.v(TAG, "stop()")
-        rtspThread?.stopAsync()
+        rtspThread?.let { thread ->
+            thread.stopAsync()
+            thread.joinQuietly()
+        }
         rtspThread = null
+        stopDecoders()
     }
 
     fun isStarted(): Boolean {
@@ -506,9 +510,15 @@ class RtspProcessor(
 
     fun stopDecoders() {
         if (DEBUG) Log.v(TAG, "stopDecoders()")
-        videoDecodeThread?.stopAsync()
+        videoDecodeThread?.let { decoder ->
+            decoder.stopAsync()
+            decoder.joinQuietly()
+        }
         videoDecodeThread = null
-        audioDecodeThread?.stopAsync()
+        audioDecodeThread?.let { decoder ->
+            decoder.stopAsync()
+            decoder.joinQuietly()
+        }
         audioDecodeThread = null
     }
 
@@ -624,6 +634,16 @@ class RtspProcessor(
             Log.e(TAG, "Failed to create low-latency keyframe", e)
         }
         return frame
+    }
+
+    private fun Thread.joinQuietly(timeoutMs: Long = 2000L) {
+        if (Thread.currentThread() === this) return
+        try {
+            join(timeoutMs)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            if (DEBUG) Log.w(TAG, "join interrupted for thread '$name'")
+        }
     }
 
     private fun getUriName(): String {
