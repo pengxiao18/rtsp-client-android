@@ -35,6 +35,7 @@ class RtspProcessor(
         videoDecoderListener: VideoDecoderListener,
         videoDecoderType: DecoderType,
         videoFrameRateStabilization: Boolean,
+        audioVideoSyncAdjustmentUs: Long,
     ) -> VideoDecodeThread)
 ) {
 
@@ -126,6 +127,11 @@ class RtspProcessor(
             field = value
             audioDecodeThread?.setPlayAudioEnabled(value)
         }
+
+    /**
+     * Positive value means delaying video relative to audio.
+     */
+    var audioVideoSyncAdjustmentUs: Long = DEFAULT_AUDIO_VIDEO_SYNC_ADJUSTMENT_US
 
     /**
      * Listener for receiving decoded PCM audio buffers.
@@ -429,23 +435,6 @@ class RtspProcessor(
 
     private fun onRtspClientConnected() {
         if (DEBUG) Log.v(TAG, "onRtspClientConnected()")
-        if (videoMimeType.isNotEmpty()) {
-            firstFrameRendered = false
-            Log.i(TAG, "Starting video decoder with mime type \"$videoMimeType\"")
-            videoDecodeThread = onVideoDecoderCreateRequested.invoke(
-                videoMimeType,
-                videoRotation,
-                videoFrameQueue,
-                videoDecoderListener,
-                videoDecoderType,
-                videoFrameRateStabilization,
-            )
-            videoDecodeThread!!.apply {
-                name = "RTSP video thread [${getUriName()}]"
-                setVideoFrameRateStabilization(videoFrameRateStabilization)
-                start()
-            }
-        }
         if (audioMimeType.isNotEmpty() /*&& checkAudio!!.isChecked*/) {
             Log.i(TAG, "Starting audio decoder with mime type \"$audioMimeType\"")
             audioDecodeThread = AudioDecodeThread(
@@ -464,6 +453,37 @@ class RtspProcessor(
                 start()
             }
         }
+        if (videoMimeType.isNotEmpty()) {
+            firstFrameRendered = false
+            Log.i(TAG, "Starting video decoder with mime type \"$videoMimeType\"")
+            videoDecodeThread = onVideoDecoderCreateRequested.invoke(
+                videoMimeType,
+                videoRotation,
+                videoFrameQueue,
+                videoDecoderListener,
+                videoDecoderType,
+                videoFrameRateStabilization,
+                audioVideoSyncAdjustmentUs,
+            )
+            videoDecodeThread!!.apply {
+                name = "RTSP video thread [${getUriName()}]"
+                setVideoFrameRateStabilization(videoFrameRateStabilization)
+                start()
+            }
+        }
+    }
+
+    internal fun getAudioPlaybackTimeUs(): Long? {
+        return audioDecodeThread?.getCurrentPlaybackTimeUs()
+    }
+
+    internal fun getAudioOutputLatencyUs(): Long {
+        return audioDecodeThread?.getOutputLatencyUs() ?: 0L
+    }
+
+    internal fun getAudioPlaybackTimeForVideoSyncUs(): Long? {
+        val playbackClockUs = getAudioPlaybackTimeUs() ?: return null
+        return playbackClockUs - getAudioOutputLatencyUs()
     }
 
     private fun onRtspClientStopped() {
@@ -658,6 +678,7 @@ class RtspProcessor(
         private const val DEFAULT_RTSP_PORT = 554
 
         const val DEFAULT_SOCKET_TIMEOUT = 5000
+        private const val DEFAULT_AUDIO_VIDEO_SYNC_ADJUSTMENT_US = 60_000L
     }
 
 }

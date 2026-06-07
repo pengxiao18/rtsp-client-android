@@ -23,6 +23,8 @@ open class RtspSurfaceView: SurfaceView {
     private var surfaceWidth = 1920
     private var surfaceHeight = 1080
 
+    private fun currentAudioPlaybackTimeUs(): Long? = rtspProcessor.getAudioPlaybackTimeForVideoSyncUs()
+
     private var rtspProcessor = RtspProcessor(
         onVideoDecoderCreateRequested = {
                 videoMimeType,
@@ -31,6 +33,7 @@ open class RtspSurfaceView: SurfaceView {
                 videoDecoderListener,
                 videoDecoderType,
                 videoFrameRateStabilization,
+                audioVideoSyncAdjustmentUs,
             ->
             VideoDecoderSurfaceThread(
                 holder.surface,
@@ -42,6 +45,8 @@ open class RtspSurfaceView: SurfaceView {
                 videoDecoderListener,
                 videoDecoderType,
                 videoFrameRateStabilization,
+                audioVideoSyncAdjustmentUs,
+                { currentAudioPlaybackTimeUs() },
             )
         }
     )
@@ -75,6 +80,11 @@ open class RtspSurfaceView: SurfaceView {
     var audioPlaybackEnabled: Boolean
         get() = rtspProcessor.audioPlaybackEnabled
         set(value) { rtspProcessor.audioPlaybackEnabled = value }
+
+    /** Positive value means delaying video relative to audio. */
+    var audioVideoSyncAdjustmentUs: Long
+        get() = rtspProcessor.audioVideoSyncAdjustmentUs
+        set(value) { rtspProcessor.audioVideoSyncAdjustmentUs = value }
 
     /** Listener receiving decoded PCM audio buffers. */
     var audioBufferListener: AudioBufferListener?

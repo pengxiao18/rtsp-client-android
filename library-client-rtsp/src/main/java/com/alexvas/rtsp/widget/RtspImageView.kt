@@ -24,7 +24,7 @@ class RtspImageView : ImageView {
     }
 
     private var rtspProcessor = RtspProcessor(onVideoDecoderCreateRequested = {
-            videoMimeType, videoRotation, videoFrameQueue, videoDecoderListener, videoDecoderType, _ ->
+            videoMimeType, videoRotation, videoFrameQueue, videoDecoderListener, videoDecoderType, _, _ ->
         VideoDecoderBitmapThread(
             videoMimeType,
             videoRotation,

@@ -5,6 +5,7 @@ import android.media.MediaFormat
 import android.util.Log
 import android.view.Surface
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 import kotlin.math.max
 
 class VideoDecoderSurfaceThread(
@@ -17,6 +18,8 @@ class VideoDecoderSurfaceThread(
     videoDecoderListener: VideoDecoderListener,
     videoDecoderType: DecoderType = DecoderType.HARDWARE,
     videoFrameRateStabilization: Boolean = false,
+    private val audioVideoSyncAdjustmentUs: Long = 0L,
+    private val audioPlaybackClockUsProvider: (() -> Long?)? = null,
 ) : VideoDecodeThread(
     mimeType, width, height, rotation, videoFrameQueue, videoDecoderListener, videoDecoderType
 ) {
@@ -43,6 +46,13 @@ class VideoDecoderSurfaceThread(
      * Last presentation timestamp we processed; used to detect wrap-around or backwards jumps.
      */
     private var lastPresentationTimeUs: Long = Long.MIN_VALUE
+
+    /**
+     * Constant offset used to map video RTP timeline to the audio playback clock timeline.
+     * The offset is calibrated from the first valid audio/video pair and re-calibrated if a
+     * large discontinuity is observed.
+     */
+    private var avSyncOffsetUs: Long? = null
 
     init {
         setVideoFrameRateStabilization(videoFrameRateStabilization)
@@ -135,10 +145,44 @@ class VideoDecoderSurfaceThread(
             return
         }
 
-        if (!hasVideoFrameRateStabilization()) {
+        val audioClockUs = audioPlaybackClockUsProvider?.invoke()
+        if (audioClockUs != null) {
+            releaseOutputBufferWithAudioClock(mediaCodec, outIndex, bufferInfo, audioClockUs)
+        } else if (!hasVideoFrameRateStabilization()) {
             mediaCodec.releaseOutputBuffer(outIndex, true)
         } else {
             releaseOutputBufferWithFrameRateStabilization(mediaCodec, outIndex, bufferInfo)
+        }
+    }
+
+    private fun releaseOutputBufferWithAudioClock(
+        mediaCodec: MediaCodec,
+        outIndex: Int,
+        bufferInfo: MediaCodec.BufferInfo,
+        audioClockUs: Long
+    ) {
+        val videoPtsUs = bufferInfo.presentationTimeUs
+        val measuredOffsetUs = audioClockUs - videoPtsUs
+        if (avSyncOffsetUs == null) {
+            avSyncOffsetUs = measuredOffsetUs
+        } else if (abs(measuredOffsetUs - avSyncOffsetUs!!) > AUDIO_SYNC_RESYNC_THRESHOLD_US) {
+            // Recover from large timeline jumps (seek/stream reset/decoder restart jitter).
+            avSyncOffsetUs = measuredOffsetUs
+        }
+
+        val alignedVideoUs = videoPtsUs + avSyncOffsetUs!!
+        val deltaUs = alignedVideoUs - audioClockUs + audioVideoSyncAdjustmentUs
+        when {
+            deltaUs < -AUDIO_SYNC_DROP_THRESHOLD_US -> {
+                mediaCodec.releaseOutputBuffer(outIndex, false)
+            }
+            deltaUs <= AUDIO_SYNC_RENDER_EARLY_MARGIN_US -> {
+                mediaCodec.releaseOutputBuffer(outIndex, true)
+            }
+            else -> {
+                val targetReleaseNs = System.nanoTime() + (deltaUs - AUDIO_SYNC_RENDER_EARLY_MARGIN_US) * 1000L
+                mediaCodec.releaseOutputBuffer(outIndex, targetReleaseNs)
+            }
         }
     }
 
@@ -153,12 +197,16 @@ class VideoDecoderSurfaceThread(
         playbackStartRealtimeNs = null
         lastFrameReleaseTimeNs = Long.MIN_VALUE
         lastPresentationTimeUs = Long.MIN_VALUE
+        avSyncOffsetUs = null
     }
 
     companion object {
         private val FRAME_DROP_THRESHOLD_NS = TimeUnit.MILLISECONDS.toNanos(80)
         private val MIN_FRAME_SPACING_NS = TimeUnit.MILLISECONDS.toNanos(1)
         private val RENDER_EARLY_MARGIN_NS = TimeUnit.MILLISECONDS.toNanos(2)
+        private const val AUDIO_SYNC_DROP_THRESHOLD_US = 80_000L
+        private const val AUDIO_SYNC_RENDER_EARLY_MARGIN_US = 10_000L
+        private const val AUDIO_SYNC_RESYNC_THRESHOLD_US = 2_000_000L
     }
 
 }

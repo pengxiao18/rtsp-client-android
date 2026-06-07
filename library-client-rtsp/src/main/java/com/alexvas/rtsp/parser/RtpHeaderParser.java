@@ -29,8 +29,9 @@ public class RtpHeaderParser {
         public long ssrc;
         public int payloadSize;
 
-        public long getTimestampMsec() {
-            return (long)(timeStamp * 11.111111);
+        public long getTimestampUs(int clockRate) {
+            int normalizedClockRate = clockRate > 0 ? clockRate : 90000;
+            return (timeStamp * 1_000_000L) / normalizedClockRate;
         }
 
         // If RTP header found, return 4 bytes of the header

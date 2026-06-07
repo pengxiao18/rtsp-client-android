@@ -27,6 +27,8 @@ class RtspPlayer(
 
     private var rtspProcessor = createProcessor()
 
+    private fun currentAudioPlaybackTimeUs(): Long? = rtspProcessor.getAudioPlaybackTimeForVideoSyncUs()
+
     init {
         MediaCodecHelper.initialize(context, /*glRenderer*/ "")
     }
@@ -40,6 +42,7 @@ class RtspPlayer(
                     videoDecoderListener,
                     videoDecoderType,
                     videoFrameRateStabilization,
+                    audioVideoSyncAdjustmentUs,
                 ->
                 VideoDecoderSurfaceThread(
                     surface,
@@ -51,6 +54,8 @@ class RtspPlayer(
                     videoDecoderListener,
                     videoDecoderType,
                     videoFrameRateStabilization,
+                    audioVideoSyncAdjustmentUs,
+                    { currentAudioPlaybackTimeUs() },
                 )
             }
         )
@@ -84,6 +89,11 @@ class RtspPlayer(
     var audioPlaybackEnabled: Boolean
         get() = rtspProcessor.audioPlaybackEnabled
         set(value) { rtspProcessor.audioPlaybackEnabled = value }
+
+    /** Positive value means delaying video relative to audio. */
+    var audioVideoSyncAdjustmentUs: Long
+        get() = rtspProcessor.audioVideoSyncAdjustmentUs
+        set(value) { rtspProcessor.audioVideoSyncAdjustmentUs = value }
 
     /** Listener receiving decoded PCM audio buffers. */
     var audioBufferListener: AudioBufferListener?

@@ -232,6 +232,7 @@ public class RtspClient {
     }
 
     private static final String CRLF = "\r\n";
+    private static final int VIDEO_RTP_CLOCK_RATE = 90000;
 
     // Size of buffer for reading from the connection
     private final static int MAX_LINE_SIZE = 4098;
@@ -702,14 +703,14 @@ public class RtspClient {
                             nalUnitSps = nalUnit;
                             // Looks like there is NAL_IDR_SLICE as well. Send it now.
                             if (nalUnit.length > VideoCodecUtils.MAX_NAL_SPS_SIZE)
-                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, header.getTimestampMsec());
+                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, header.getTimestampUs(VIDEO_RTP_CLOCK_RATE));
                             break;
 
                         case VideoCodecUtils.NAL_PPS:
                             nalUnitPps = nalUnit;
                             // Looks like there is NAL_IDR_SLICE as well. Send it now.
                             if (nalUnit.length > VideoCodecUtils.MAX_NAL_SPS_SIZE)
-                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, header.getTimestampMsec());
+                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, header.getTimestampUs(VIDEO_RTP_CLOCK_RATE));
                             break;
 
                         case VideoCodecUtils.NAL_AUD:
@@ -734,7 +735,7 @@ public class RtspClient {
                                 System.arraycopy(nalUnitSei, 0, nalUnitSpsPpsIdr, offset, nalUnitSei.length);
                                 offset += nalUnitSei.length;
                                 System.arraycopy(nalUnit, 0, nalUnitSpsPpsIdr, offset, nalUnit.length);
-                                listener.onRtspVideoNalUnitReceived(nalUnitSpsPpsIdr, 0, nalUnitSpsPpsIdr.length, header.getTimestampMsec());
+                                listener.onRtspVideoNalUnitReceived(nalUnitSpsPpsIdr, 0, nalUnitSpsPpsIdr.length, header.getTimestampUs(VIDEO_RTP_CLOCK_RATE));
 //                              listener.onRtspVideoNalUnitReceived(nalUnitSppPpsIdr, 0, nalUnitSppPpsIdr.length, System.currentTimeMillis());
                                 // Send it only once
                                 nalUnitSps = null;
@@ -746,7 +747,7 @@ public class RtspClient {
 
                         default:
                             if (nalUnitSei.length == 0 && nalUnitAud.length == 0) {
-                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, header.getTimestampMsec());
+                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, header.getTimestampUs(VIDEO_RTP_CLOCK_RATE));
                             } else {
                                 byte[] nalUnitAudSeiSlice = new byte[nalUnitAud.length + nalUnitSei.length + nalUnit.length];
                                 int offset = 0;
@@ -755,7 +756,7 @@ public class RtspClient {
                                 System.arraycopy(nalUnitSei, 0, nalUnitAudSeiSlice, offset, nalUnitSei.length);
                                 offset += nalUnitSei.length;
                                 System.arraycopy(nalUnit, 0, nalUnitAudSeiSlice, offset, nalUnit.length);
-                                listener.onRtspVideoNalUnitReceived(nalUnitAudSeiSlice, 0, nalUnitAudSeiSlice.length, header.getTimestampMsec());
+                                listener.onRtspVideoNalUnitReceived(nalUnitAudSeiSlice, 0, nalUnitAudSeiSlice.length, header.getTimestampUs(VIDEO_RTP_CLOCK_RATE));
                                 nalUnitSei = EMPTY_ARRAY;
                                 nalUnitAud = EMPTY_ARRAY;
                             }
@@ -766,13 +767,17 @@ public class RtspClient {
             } else if (sdpInfo.audioTrack != null && header.payloadType == sdpInfo.audioTrack.payloadType) {
                 if (audioParser != null) {
                     byte[] sample = audioParser.processRtpPacketAndGetSample(data, header.payloadSize);
-                    if (sample != null)
-                        listener.onRtspAudioSampleReceived(sample, 0, sample.length, header.getTimestampMsec());
+                    if (sample != null) {
+                        int audioClockRate = sdpInfo.audioTrack != null && sdpInfo.audioTrack.sampleRateHz > 0
+                                ? sdpInfo.audioTrack.sampleRateHz
+                                : VIDEO_RTP_CLOCK_RATE;
+                        listener.onRtspAudioSampleReceived(sample, 0, sample.length, header.getTimestampUs(audioClockRate));
+                    }
                 }
 
             // Application
             } else if (sdpInfo.applicationTrack != null && header.payloadType == sdpInfo.applicationTrack.payloadType) {
-                listener.onRtspApplicationDataReceived(data, 0, header.payloadSize, header.getTimestampMsec());
+                listener.onRtspApplicationDataReceived(data, 0, header.payloadSize, header.getTimestampUs(VIDEO_RTP_CLOCK_RATE));
 
             // Unknown
             } else {

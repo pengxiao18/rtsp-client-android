@@ -31,6 +31,8 @@ class AudioDecodeThread(
     @Volatile private var playAudio = initialPlayAudio
     @Volatile private var bufferListener: AudioBufferListener? = initialBufferListener
     @Volatile private var audioTrack: AudioTrack? = null
+    @Volatile private var audioStartPtsUs: Long? = null
+    @Volatile private var outputLatencyUs: Long = 0L
 
     fun stopAsync() {
         if (DEBUG) Log.v(TAG, "stopAsync()")
@@ -61,6 +63,17 @@ class AudioDecodeThread(
 
     fun setAudioBufferListener(listener: AudioBufferListener?) {
         bufferListener = listener
+    }
+
+    fun getCurrentPlaybackTimeUs(): Long? {
+        val track = audioTrack ?: return null
+        val startPtsUs = audioStartPtsUs ?: return null
+        val playedFrames = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        return startPtsUs + (playedFrames * 1_000_000L) / sampleRate
+    }
+
+    fun getOutputLatencyUs(): Long {
+        return outputLatencyUs
     }
 
     override fun run() {
@@ -154,6 +167,12 @@ class AudioDecodeThread(
                 bufferSize,
                 AudioTrack.MODE_STREAM,
                 0)
+        val bytesPerFrame = channelCount * 2L
+        outputLatencyUs = if (bytesPerFrame > 0) {
+            (bufferSize.toLong() / bytesPerFrame) * 1_000_000L / sampleRate
+        } else {
+            0L
+        }
         audioTrack = track
         if (playAudio) {
             track.play()
@@ -210,6 +229,9 @@ class AudioDecodeThread(
                             byteBuffer?.clear()
 
                             if (chunk.isNotEmpty()) {
+                                if (audioStartPtsUs == null) {
+                                    audioStartPtsUs = bufferInfo.presentationTimeUs
+                                }
                                 bufferListener?.onAudioBufferAvailable(
                                     chunk,
                                     0,
@@ -240,6 +262,8 @@ class AudioDecodeThread(
             track.pause()
         } catch (_: Throwable) {
         }
+        audioStartPtsUs = null
+        outputLatencyUs = 0L
         track.flush()
         track.release()
         audioTrack = null

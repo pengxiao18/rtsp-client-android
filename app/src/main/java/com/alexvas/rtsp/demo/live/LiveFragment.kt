@@ -11,6 +11,7 @@ import android.view.PixelCopy
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.widget.SeekBar
 import android.widget.Toast
 import androidx.constraintlayout.widget.ConstraintSet
 import androidx.core.net.toUri
@@ -35,6 +36,7 @@ class LiveFragment : Fragment() {
 
     private var statisticsTimer: Timer? = null
     private var svVideoSurfaceResolution = Pair(0, 0)
+    private var avSyncAdjustmentUs: Long = DEFAULT_AV_SYNC_ADJUSTMENT_US
 
     private val rtspStatusSurfaceListener = object: RtspStatusListener {
         override fun onRtspStatusConnecting() {
@@ -286,6 +288,7 @@ class LiveFragment : Fragment() {
         binding.cbExperimentalRewriteSps.setOnCheckedChangeListener { _, isChecked ->
             binding.svVideoSurface.experimentalUpdateSpsFrameWithLowLatencyParams = isChecked
         }
+        initAvSyncControls()
 
         binding.bnRotate0.setOnClickListener {
             binding.svVideoSurface.videoRotation = 0
@@ -334,6 +337,7 @@ class LiveFragment : Fragment() {
                     )
                     debug = binding.llRtspParams.cbDebug.isChecked
                     videoFrameRateStabilization = binding.cbVideoFpsStabilization.isChecked
+                    audioVideoSyncAdjustmentUs = avSyncAdjustmentUs
                     start(
                         requestVideo = binding.llRtspParams.cbVideo.isChecked,
                         requestAudio = binding.llRtspParams.cbAudio.isChecked,
@@ -383,6 +387,29 @@ class LiveFragment : Fragment() {
             }
         }
         return binding.root
+    }
+
+    private fun initAvSyncControls() {
+        binding.sbAvSyncAdjustment.max = ((AV_SYNC_MAX_US - AV_SYNC_MIN_US) / AV_SYNC_STEP_US).toInt()
+        binding.sbAvSyncAdjustment.progress = ((avSyncAdjustmentUs - AV_SYNC_MIN_US) / AV_SYNC_STEP_US).toInt()
+        updateAvSyncLabel()
+        binding.sbAvSyncAdjustment.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                avSyncAdjustmentUs = AV_SYNC_MIN_US + progress * AV_SYNC_STEP_US
+                updateAvSyncLabel()
+                binding.svVideoSurface.audioVideoSyncAdjustmentUs = avSyncAdjustmentUs
+            }
+
+            override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+
+            override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+        })
+    }
+
+    private fun updateAvSyncLabel() {
+        val ms = avSyncAdjustmentUs / 1000
+        val sign = if (ms >= 0) "+" else ""
+        binding.tvAvSyncAdjustment.text = "AV Sync: ${sign}${ms} ms (video delay)"
     }
 
     override fun onResume() {
@@ -463,6 +490,10 @@ class LiveFragment : Fragment() {
     companion object {
         private val TAG: String = LiveFragment::class.java.simpleName
         private const val DEBUG = true
+        private const val AV_SYNC_MIN_US = -200_000L
+        private const val AV_SYNC_MAX_US = 1_500_000L
+        private const val AV_SYNC_STEP_US = 1_000L
+        private const val DEFAULT_AV_SYNC_ADJUSTMENT_US = 460_000L
     }
 
 }
