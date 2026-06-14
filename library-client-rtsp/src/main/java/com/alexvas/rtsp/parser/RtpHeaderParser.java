@@ -29,8 +29,21 @@ public class RtpHeaderParser {
         public long ssrc;
         public int payloadSize;
 
+        /**
+         * Returns RTP timestamp converted to microseconds using the provided RTP clock rate.
+         *
+         * Note: the historic method name contains "Msec", but the returned unit is microseconds.
+         */
+        public long getTimestampMsec(int clockRateHz) {
+            int safeClockRateHz = clockRateHz > 0 ? clockRateHz : 90000;
+            return (timeStamp * 1_000_000L) / safeClockRateHz;
+        }
+
+        /**
+         * Backward-compatible conversion assuming a 90kHz RTP clock (common for video).
+         */
         public long getTimestampMsec() {
-            return (long)(timeStamp * 11.111111);
+            return getTimestampMsec(90000);
         }
 
         // If RTP header found, return 4 bytes of the header

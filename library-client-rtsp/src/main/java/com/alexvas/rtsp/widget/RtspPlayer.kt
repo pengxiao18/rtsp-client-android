@@ -3,7 +3,9 @@ package com.alexvas.rtsp.widget
 import android.content.Context
 import android.net.Uri
 import android.view.Surface
+import com.alexvas.rtsp.codec.AudioClockProvider
 import com.alexvas.rtsp.codec.AudioDecodeThread.AudioBufferListener
+import com.alexvas.rtsp.codec.AudioStartupSyncMode
 import com.alexvas.rtsp.codec.VideoDecodeThread.DecoderType
 import com.alexvas.rtsp.codec.VideoDecoderSurfaceThread
 import com.alexvas.rtsp.widget.RtspProcessor.Statistics
@@ -84,6 +86,30 @@ class RtspPlayer(
     var audioPlaybackEnabled: Boolean
         get() = rtspProcessor.audioPlaybackEnabled
         set(value) { rtspProcessor.audioPlaybackEnabled = value }
+
+    /**
+     * Optional external audio clock.
+     * Setting this automatically enables audio-master video sync;
+     * clearing it returns to legacy sync mode.
+     */
+    var audioClockProvider: AudioClockProvider?
+        get() = rtspProcessor.audioClockProvider
+        set(value) { rtspProcessor.audioClockProvider = value }
+
+    /**
+     * Controls startup audio gating behavior for decoded audio callbacks.
+     */
+    var audioStartupSyncMode: AudioStartupSyncMode
+        get() = rtspProcessor.audioStartupSyncMode
+        set(value) { rtspProcessor.audioStartupSyncMode = value }
+
+    /**
+     * Timeout (ms) for [AudioStartupSyncMode.DROP_UNTIL_FIRST_VIDEO_FRAME_RENDERED].
+     * If first video frame is not rendered within this timeout, audio forwarding resumes.
+     */
+    var audioStartupDropTimeoutMs: Long
+        get() = rtspProcessor.audioStartupDropTimeoutMs
+        set(value) { rtspProcessor.audioStartupDropTimeoutMs = value }
 
     /** Listener receiving decoded PCM audio buffers. */
     var audioBufferListener: AudioBufferListener?

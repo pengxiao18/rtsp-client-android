@@ -10,6 +10,7 @@ import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.container.NalUnitUtil
 import com.alexvas.rtsp.codec.AudioDecodeThread.AudioBufferListener
+import com.alexvas.rtsp.codec.AudioStartupSyncMode
 import com.alexvas.rtsp.codec.VideoDecodeThread.DecoderType
 import com.alexvas.rtsp.codec.VideoDecoderSurfaceThread
 import com.alexvas.rtsp.widget.RtspProcessor.Statistics
@@ -80,6 +81,21 @@ open class RtspSurfaceView: SurfaceView {
     var audioBufferListener: AudioBufferListener?
         get() = rtspProcessor.audioBufferListener
         set(value) { rtspProcessor.audioBufferListener = value }
+
+    /**
+     * Controls startup audio gating behavior for decoded audio callbacks.
+     */
+    var audioStartupSyncMode: AudioStartupSyncMode
+        get() = rtspProcessor.audioStartupSyncMode
+        set(value) { rtspProcessor.audioStartupSyncMode = value }
+
+    /**
+     * Timeout (ms) for [AudioStartupSyncMode.DROP_UNTIL_FIRST_VIDEO_FRAME_RENDERED].
+     * If first video frame is not rendered within this timeout, audio forwarding resumes.
+     */
+    var audioStartupDropTimeoutMs: Long
+        get() = rtspProcessor.audioStartupDropTimeoutMs
+        set(value) { rtspProcessor.audioStartupDropTimeoutMs = value }
 
     private val surfaceCallback = object: SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) {

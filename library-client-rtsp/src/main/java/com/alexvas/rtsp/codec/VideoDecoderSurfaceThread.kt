@@ -5,6 +5,7 @@ import android.media.MediaFormat
 import android.util.Log
 import android.view.Surface
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.locks.LockSupport
 import kotlin.math.max
 
 class VideoDecoderSurfaceThread(
@@ -43,6 +44,9 @@ class VideoDecoderSurfaceThread(
      * Last presentation timestamp we processed; used to detect wrap-around or backwards jumps.
      */
     private var lastPresentationTimeUs: Long = Long.MIN_VALUE
+    private var audioSyncBaseVideoPtsUs: Long = Long.MIN_VALUE
+    private var audioSyncBaseAudioPosUs: Long = Long.MIN_VALUE
+    private var lastAudioPositionUs: Long = Long.MIN_VALUE
 
     init {
         setVideoFrameRateStabilization(videoFrameRateStabilization)
@@ -55,6 +59,20 @@ class VideoDecoderSurfaceThread(
         }
         mediaCodec.configure(mediaFormat, surface, null, 0)
         resetFrameTiming()
+    }
+
+    override fun setVideoSyncMode(mode: VideoSyncMode) {
+        super.setVideoSyncMode(mode)
+        if (mode != VideoSyncMode.AUDIO_MASTER) {
+            resetAudioSyncTiming()
+        }
+    }
+
+    override fun setAudioClockProvider(provider: AudioClockProvider?) {
+        super.setAudioClockProvider(provider)
+        if (provider == null) {
+            resetAudioSyncTiming()
+        }
     }
 
     private fun releaseOutputBufferWithFrameRateStabilization(
@@ -123,6 +141,103 @@ class VideoDecoderSurfaceThread(
         lastPresentationTimeUs = ptsUs
     }
 
+    private fun releaseOutputBufferWithAudioMasterSync(
+        mediaCodec: MediaCodec,
+        outIndex: Int,
+        bufferInfo: MediaCodec.BufferInfo
+    ) {
+        val provider = currentAudioClockProvider
+        if (provider == null) {
+            mediaCodec.releaseOutputBuffer(outIndex, true)
+            return
+        }
+
+        val ptsUs = bufferInfo.presentationTimeUs
+        val nowNs = System.nanoTime()
+
+        val audioPosUs = try {
+            provider.getCurrentPositionUs()
+        } catch (_: Throwable) {
+            INVALID_AUDIO_CLOCK_US
+        }
+
+        if (audioPosUs <= INVALID_AUDIO_CLOCK_US) {
+            mediaCodec.releaseOutputBuffer(outIndex, true)
+            return
+        }
+
+        if (audioSyncBaseVideoPtsUs == Long.MIN_VALUE || audioSyncBaseAudioPosUs == Long.MIN_VALUE) {
+            audioSyncBaseVideoPtsUs = ptsUs
+            audioSyncBaseAudioPosUs = audioPosUs
+            lastAudioPositionUs = audioPosUs
+            mediaCodec.releaseOutputBuffer(outIndex, true)
+            return
+        }
+
+        if (lastAudioPositionUs != Long.MIN_VALUE && audioPosUs + AUDIO_CLOCK_BACKWARD_TOLERANCE_US < lastAudioPositionUs) {
+            // Playback clock moved backwards significantly (seek/reset). Re-anchor sync.
+            audioSyncBaseVideoPtsUs = ptsUs
+            audioSyncBaseAudioPosUs = audioPosUs
+        }
+        lastAudioPositionUs = audioPosUs
+
+        val audioMasterPtsUs = audioSyncBaseVideoPtsUs + (audioPosUs - audioSyncBaseAudioPosUs)
+        val avDiffUs = ptsUs - audioMasterPtsUs
+        val pendingUs = try {
+            provider.getPendingDurationUs()
+        } catch (_: Throwable) {
+            -1L
+        }
+        val safePendingUs = maxOf(0L, pendingUs)
+        val dynamicMaxAheadUs = (safePendingUs + AUDIO_PENDING_HEADROOM_US)
+            .coerceIn(VIDEO_MIN_AHEAD_WAIT_US, VIDEO_MAX_AHEAD_WAIT_CAP_US)
+
+        if (avDiffUs < -VIDEO_LATE_DROP_US) {
+            mediaCodec.releaseOutputBuffer(outIndex, false)
+            return
+        }
+
+        val clampedAheadUs = minOf(avDiffUs, dynamicMaxAheadUs)
+        if (clampedAheadUs > VIDEO_EARLY_RENDER_MARGIN_US) {
+            val delayNs = (clampedAheadUs - VIDEO_EARLY_RENDER_MARGIN_US) * 1000L
+            releaseOutputBufferAfterDelay(mediaCodec, outIndex, nowNs + delayNs)
+        } else {
+            mediaCodec.releaseOutputBuffer(outIndex, true)
+        }
+    }
+
+    private fun releaseOutputBufferAfterDelay(
+        mediaCodec: MediaCodec,
+        outIndex: Int,
+        targetReleaseNs: Long
+    ): Long {
+        // Some Surface consumers do not strictly honor codec release timestamps.
+        // Block on the decode thread to enforce wall-clock delay, then render immediately.
+        val waitStartNs = System.nanoTime()
+        var remainingNs = targetReleaseNs - System.nanoTime()
+        while (remainingNs > 0L) {
+            if (remainingNs > COARSE_WAIT_SWITCH_NS) {
+                val sleepMs = (remainingNs - COARSE_WAIT_GUARD_NS) / 1_000_000L
+                if (sleepMs > 0L) {
+                    try {
+                        Thread.sleep(sleepMs)
+                    } catch (_: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        mediaCodec.releaseOutputBuffer(outIndex, false)
+                        return -1L
+                    }
+                } else {
+                    LockSupport.parkNanos(remainingNs)
+                }
+            } else {
+                LockSupport.parkNanos(remainingNs)
+            }
+            remainingNs = targetReleaseNs - System.nanoTime()
+        }
+        mediaCodec.releaseOutputBuffer(outIndex, true)
+        return System.nanoTime() - waitStartNs
+    }
+
     override fun releaseOutputBuffer(
         mediaCodec: MediaCodec,
         outIndex: Int,
@@ -135,7 +250,9 @@ class VideoDecoderSurfaceThread(
             return
         }
 
-        if (!hasVideoFrameRateStabilization()) {
+        if (currentVideoSyncMode == VideoSyncMode.AUDIO_MASTER && currentAudioClockProvider != null) {
+            releaseOutputBufferWithAudioMasterSync(mediaCodec, outIndex, bufferInfo)
+        } else if (!hasVideoFrameRateStabilization()) {
             mediaCodec.releaseOutputBuffer(outIndex, true)
         } else {
             releaseOutputBufferWithFrameRateStabilization(mediaCodec, outIndex, bufferInfo)
@@ -153,12 +270,28 @@ class VideoDecoderSurfaceThread(
         playbackStartRealtimeNs = null
         lastFrameReleaseTimeNs = Long.MIN_VALUE
         lastPresentationTimeUs = Long.MIN_VALUE
+        resetAudioSyncTiming()
+    }
+
+    private fun resetAudioSyncTiming() {
+        audioSyncBaseVideoPtsUs = Long.MIN_VALUE
+        audioSyncBaseAudioPosUs = Long.MIN_VALUE
+        lastAudioPositionUs = Long.MIN_VALUE
     }
 
     companion object {
         private val FRAME_DROP_THRESHOLD_NS = TimeUnit.MILLISECONDS.toNanos(80)
         private val MIN_FRAME_SPACING_NS = TimeUnit.MILLISECONDS.toNanos(1)
         private val RENDER_EARLY_MARGIN_NS = TimeUnit.MILLISECONDS.toNanos(2)
+        private const val INVALID_AUDIO_CLOCK_US = 0L
+        private const val AUDIO_CLOCK_BACKWARD_TOLERANCE_US = 30_000L
+        private const val VIDEO_LATE_DROP_US = 160_000L
+        private const val VIDEO_MIN_AHEAD_WAIT_US = 180_000L
+        private const val VIDEO_MAX_AHEAD_WAIT_CAP_US = 400_000L
+        private const val AUDIO_PENDING_HEADROOM_US = 30_000L
+        private const val VIDEO_EARLY_RENDER_MARGIN_US = 6_000L
+        private val COARSE_WAIT_SWITCH_NS = TimeUnit.MILLISECONDS.toNanos(3)
+        private val COARSE_WAIT_GUARD_NS = TimeUnit.MILLISECONDS.toNanos(1)
     }
 
 }
