@@ -5,12 +5,15 @@ import android.media.MediaFormat
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.media3.container.NalUnitUtil
 import com.alexvas.rtsp.RtspClient
 import com.alexvas.rtsp.RtspClient.SdpInfo
 import com.alexvas.rtsp.codec.AudioCodecType
+import com.alexvas.rtsp.codec.AudioClockProvider
 import com.alexvas.rtsp.codec.AudioDecodeThread
+import com.alexvas.rtsp.codec.AudioStartupSyncMode
 import com.alexvas.rtsp.codec.AudioFrameQueue
 import com.alexvas.rtsp.codec.FrameQueue
 import com.alexvas.rtsp.codec.VideoCodecType
@@ -18,6 +21,7 @@ import com.alexvas.rtsp.codec.VideoDecodeThread
 import com.alexvas.rtsp.codec.VideoDecodeThread.DecoderType
 import com.alexvas.rtsp.codec.VideoDecodeThread.VideoDecoderListener
 import com.alexvas.rtsp.codec.VideoFrameQueue
+import com.alexvas.rtsp.codec.VideoSyncMode
 import com.alexvas.utils.NetUtils
 import com.alexvas.utils.VideoCodecUtils
 import org.jcodec.codecs.h264.io.model.SeqParameterSet
@@ -64,6 +68,8 @@ class RtspProcessor(
     private var audioChannelCount: Int = 0
     private var audioCodecConfig: ByteArray? = null
     private var firstFrameRendered = false
+    private var hasVideoTrackInCurrentSession = false
+    private var audioStartupGateStartNs: Long = Long.MIN_VALUE
     var statistics = Statistics()
         get() {
             videoDecodeThread?.let { decoder ->
@@ -119,6 +125,27 @@ class RtspProcessor(
         }
 
     /**
+     * Controls how video frames are synchronized.
+     * Defaults to [VideoSyncMode.LEGACY] to preserve existing behavior.
+     */
+    var videoSyncMode: VideoSyncMode = VideoSyncMode.LEGACY
+        set(value) {
+            field = value
+            videoDecodeThread?.setVideoSyncMode(value)
+        }
+
+    /**
+     * Optional external audio playback clock used when [videoSyncMode] is [VideoSyncMode.AUDIO_MASTER].
+     */
+    var audioClockProvider: AudioClockProvider? = null
+        set(value) {
+            field = value
+            // Auto-switch sync mode based on audio clock provider presence.
+            videoSyncMode = if (value != null) VideoSyncMode.AUDIO_MASTER else VideoSyncMode.LEGACY
+            videoDecodeThread?.setAudioClockProvider(value)
+        }
+
+    /**
      * Controls whether decoded audio should be rendered to the platform AudioTrack.
      */
     var audioPlaybackEnabled: Boolean = true
@@ -133,8 +160,21 @@ class RtspProcessor(
     var audioBufferListener: AudioDecodeThread.AudioBufferListener? = null
         set(value) {
             field = value
-            audioDecodeThread?.setAudioBufferListener(value)
+            audioDecodeThread?.setAudioBufferListener(internalAudioBufferListener)
         }
+
+    /**
+     * Controls startup audio gating behavior.
+     * Defaults to [AudioStartupSyncMode.DROP_UNTIL_FIRST_VIDEO_FRAME_RENDERED].
+     */
+    var audioStartupSyncMode: AudioStartupSyncMode =
+        AudioStartupSyncMode.DROP_UNTIL_FIRST_VIDEO_FRAME_RENDERED
+
+    /**
+     * Timeout in milliseconds for startup audio drop mode.
+     * If first video frame is not rendered within this timeout, audio forwarding is resumed.
+     */
+    var audioStartupDropTimeoutMs: Long = DEFAULT_AUDIO_STARTUP_DROP_TIMEOUT_MS
     /**
      * Status listener for getting RTSP event updates.
      */
@@ -156,6 +196,7 @@ class RtspProcessor(
 
         override fun onRtspConnected(sdpInfo: SdpInfo) {
             if (DEBUG) Log.v(TAG, "onRtspConnected()")
+            hasVideoTrackInCurrentSession = sdpInfo.videoTrack != null
             if (sdpInfo.videoTrack != null) {
                 videoFrameQueue.clear()
                 when (sdpInfo.videoTrack?.videoCodec) {
@@ -421,6 +462,29 @@ class RtspProcessor(
         }
     }
 
+    private val internalAudioBufferListener = object: AudioDecodeThread.AudioBufferListener {
+        override fun onAudioBufferAvailable(
+            data: ByteArray,
+            offset: Int,
+            length: Int,
+            presentationTimeUs: Long,
+            sampleRate: Int,
+            channelCount: Int,
+        ) {
+            if (shouldDropAudioForStartupSync()) {
+                return
+            }
+            audioBufferListener?.onAudioBufferAvailable(
+                data,
+                offset,
+                length,
+                presentationTimeUs,
+                sampleRate,
+                channelCount
+            )
+        }
+    }
+
 
     private fun onRtspClientStarted() {
         if (DEBUG) Log.v(TAG, "onRtspClientStarted()")
@@ -429,6 +493,7 @@ class RtspProcessor(
 
     private fun onRtspClientConnected() {
         if (DEBUG) Log.v(TAG, "onRtspClientConnected()")
+        audioStartupGateStartNs = SystemClock.elapsedRealtimeNanos()
         if (videoMimeType.isNotEmpty()) {
             firstFrameRendered = false
             Log.i(TAG, "Starting video decoder with mime type \"$videoMimeType\"")
@@ -443,6 +508,8 @@ class RtspProcessor(
             videoDecodeThread!!.apply {
                 name = "RTSP video thread [${getUriName()}]"
                 setVideoFrameRateStabilization(videoFrameRateStabilization)
+                setVideoSyncMode(videoSyncMode)
+                setAudioClockProvider(audioClockProvider)
                 start()
             }
         }
@@ -455,12 +522,12 @@ class RtspProcessor(
                 audioCodecConfig,
                 audioFrameQueue,
                 initialPlayAudio = audioPlaybackEnabled,
-                initialBufferListener = audioBufferListener,
+                initialBufferListener = internalAudioBufferListener,
             )
             audioDecodeThread!!.apply {
                 name = "RTSP audio thread [${getUriName()}]"
                 setPlayAudioEnabled(audioPlaybackEnabled)
-                setAudioBufferListener(audioBufferListener)
+                setAudioBufferListener(internalAudioBufferListener)
                 start()
             }
         }
@@ -468,6 +535,9 @@ class RtspProcessor(
 
     private fun onRtspClientStopped() {
         if (DEBUG) Log.v(TAG, "onRtspClientStopped()")
+        firstFrameRendered = false
+        hasVideoTrackInCurrentSession = false
+        audioStartupGateStartNs = Long.MIN_VALUE
         stopDecoders()
         rtspThread = null
 //        uiHandler.post { statusListener?.onRtspStatusDisconnected() }
@@ -501,6 +571,9 @@ class RtspProcessor(
             thread.joinQuietly()
         }
         rtspThread = null
+        firstFrameRendered = false
+        hasVideoTrackInCurrentSession = false
+        audioStartupGateStartNs = Long.MIN_VALUE
         stopDecoders()
     }
 
@@ -658,6 +731,31 @@ class RtspProcessor(
         private const val DEFAULT_RTSP_PORT = 554
 
         const val DEFAULT_SOCKET_TIMEOUT = 5000
+        private const val DEFAULT_AUDIO_STARTUP_DROP_TIMEOUT_MS = 800L
+    }
+
+    private fun shouldDropAudioForStartupSync(): Boolean {
+        if (audioStartupSyncMode != AudioStartupSyncMode.DROP_UNTIL_FIRST_VIDEO_FRAME_RENDERED) {
+            return false
+        }
+        if (!requestVideo || !hasVideoTrackInCurrentSession) {
+            return false
+        }
+        if (firstFrameRendered) {
+            return false
+        }
+
+        val timeoutMs = audioStartupDropTimeoutMs
+        if (timeoutMs <= 0L) {
+            return true
+        }
+
+        if (audioStartupGateStartNs == Long.MIN_VALUE) {
+            return true
+        }
+
+        val elapsedMs = (SystemClock.elapsedRealtimeNanos() - audioStartupGateStartNs) / 1_000_000L
+        return elapsedMs < timeoutMs
     }
 
 }

@@ -185,11 +185,13 @@ public class RtspClient {
     public abstract static class Track {
         public String request;
         public int payloadType;
+        /** RTP clock rate in Hz (e.g. video 90000, audio sample rate). */
+        public int clockRateHz = 90000;
 
         @NonNull
         @Override
         public String toString() {
-            return "Track{request='" + request + "', payloadType=" + payloadType + '}';
+            return "Track{request='" + request + "', payloadType=" + payloadType + ", clockRateHz=" + clockRateHz + '}';
         }
     }
 
@@ -679,6 +681,7 @@ public class RtspClient {
 
             // Video
             if (sdpInfo.videoTrack != null && header.payloadType == sdpInfo.videoTrack.payloadType) {
+                final long timestampUs = header.getTimestampMsec(sdpInfo.videoTrack.clockRateHz);
                 if (videoSeqNum > header.sequenceNumber)
                     Log.w(TAG, "Invalid video seq num " + videoSeqNum + "/" + header.sequenceNumber);
                 videoSeqNum = header.sequenceNumber;
@@ -702,14 +705,14 @@ public class RtspClient {
                             nalUnitSps = nalUnit;
                             // Looks like there is NAL_IDR_SLICE as well. Send it now.
                             if (nalUnit.length > VideoCodecUtils.MAX_NAL_SPS_SIZE)
-                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, header.getTimestampMsec());
+                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, timestampUs);
                             break;
 
                         case VideoCodecUtils.NAL_PPS:
                             nalUnitPps = nalUnit;
                             // Looks like there is NAL_IDR_SLICE as well. Send it now.
                             if (nalUnit.length > VideoCodecUtils.MAX_NAL_SPS_SIZE)
-                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, header.getTimestampMsec());
+                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, timestampUs);
                             break;
 
                         case VideoCodecUtils.NAL_AUD:
@@ -734,7 +737,7 @@ public class RtspClient {
                                 System.arraycopy(nalUnitSei, 0, nalUnitSpsPpsIdr, offset, nalUnitSei.length);
                                 offset += nalUnitSei.length;
                                 System.arraycopy(nalUnit, 0, nalUnitSpsPpsIdr, offset, nalUnit.length);
-                                listener.onRtspVideoNalUnitReceived(nalUnitSpsPpsIdr, 0, nalUnitSpsPpsIdr.length, header.getTimestampMsec());
+                                listener.onRtspVideoNalUnitReceived(nalUnitSpsPpsIdr, 0, nalUnitSpsPpsIdr.length, timestampUs);
 //                              listener.onRtspVideoNalUnitReceived(nalUnitSppPpsIdr, 0, nalUnitSppPpsIdr.length, System.currentTimeMillis());
                                 // Send it only once
                                 nalUnitSps = null;
@@ -746,7 +749,7 @@ public class RtspClient {
 
                         default:
                             if (nalUnitSei.length == 0 && nalUnitAud.length == 0) {
-                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, header.getTimestampMsec());
+                                listener.onRtspVideoNalUnitReceived(nalUnit, 0, nalUnit.length, timestampUs);
                             } else {
                                 byte[] nalUnitAudSeiSlice = new byte[nalUnitAud.length + nalUnitSei.length + nalUnit.length];
                                 int offset = 0;
@@ -755,7 +758,7 @@ public class RtspClient {
                                 System.arraycopy(nalUnitSei, 0, nalUnitAudSeiSlice, offset, nalUnitSei.length);
                                 offset += nalUnitSei.length;
                                 System.arraycopy(nalUnit, 0, nalUnitAudSeiSlice, offset, nalUnit.length);
-                                listener.onRtspVideoNalUnitReceived(nalUnitAudSeiSlice, 0, nalUnitAudSeiSlice.length, header.getTimestampMsec());
+                                listener.onRtspVideoNalUnitReceived(nalUnitAudSeiSlice, 0, nalUnitAudSeiSlice.length, timestampUs);
                                 nalUnitSei = EMPTY_ARRAY;
                                 nalUnitAud = EMPTY_ARRAY;
                             }
@@ -764,15 +767,20 @@ public class RtspClient {
 
             // Audio
             } else if (sdpInfo.audioTrack != null && header.payloadType == sdpInfo.audioTrack.payloadType) {
+                final long timestampUs = header.getTimestampMsec(sdpInfo.audioTrack.clockRateHz);
                 if (audioParser != null) {
                     byte[] sample = audioParser.processRtpPacketAndGetSample(data, header.payloadSize);
                     if (sample != null)
-                        listener.onRtspAudioSampleReceived(sample, 0, sample.length, header.getTimestampMsec());
+                        listener.onRtspAudioSampleReceived(sample, 0, sample.length, timestampUs);
                 }
 
             // Application
             } else if (sdpInfo.applicationTrack != null && header.payloadType == sdpInfo.applicationTrack.payloadType) {
-                listener.onRtspApplicationDataReceived(data, 0, header.payloadSize, header.getTimestampMsec());
+                listener.onRtspApplicationDataReceived(
+                        data,
+                        0,
+                        header.payloadSize,
+                        header.getTimestampMsec(sdpInfo.applicationTrack.clockRateHz));
 
             // Unknown
             } else {
@@ -1009,11 +1017,13 @@ public class RtspClient {
                                     case 0 -> { // uLaw
                                         track.audioCodec = AUDIO_CODEC_G711_ULAW;
                                         track.sampleRateHz = 8000;
+                                        track.clockRateHz = 8000;
                                         track.channels = 1;
                                     }
                                     case 8 -> { // aLaw
                                         track.audioCodec = AUDIO_CODEC_G711_ALAW;
                                         track.sampleRateHz = 8000;
+                                        track.clockRateHz = 8000;
                                         track.channels = 1;
                                     }
                                 }
@@ -1064,6 +1074,15 @@ public class RtspClient {
                                             case "h265" -> ((VideoTrack) tracks[0]).videoCodec = VIDEO_CODEC_H265;
                                             default -> Log.w(TAG, "Unknown video codec \"" + values[0] + "\"");
                                         }
+                                        if (values.length > 1) {
+                                            try {
+                                                ((VideoTrack) tracks[0]).clockRateHz = Integer.parseInt(values[1]);
+                                            } catch (Exception e) {
+                                                ((VideoTrack) tracks[0]).clockRateHz = 90000;
+                                            }
+                                        } else {
+                                            ((VideoTrack) tracks[0]).clockRateHz = 90000;
+                                        }
                                         Log.i(TAG, "Video: " + values[0]);
                                     }
                                 }
@@ -1085,6 +1104,7 @@ public class RtspClient {
                                             }
                                         }
                                         track.sampleRateHz = Integer.parseInt(values[1]);
+                                        track.clockRateHz = track.sampleRateHz;
                                         // If no channels specified, use mono, e.g. "a=rtpmap:97 MPEG4-GENERIC/8000"
                                         track.channels = values.length > 2 ? Integer.parseInt(values[2]) : 1;
                                         Log.i(TAG, "Audio: " + getAudioCodecName(track.audioCodec) + ", sample rate: " + track.sampleRateHz + " Hz, channels: " + track.channels);
@@ -1093,7 +1113,15 @@ public class RtspClient {
 
                             // Application
                             } else {
-                                // Do nothing
+                                if (values.length > 1) {
+                                    values = TextUtils.split(values[1], "/");
+                                    if (values.length > 1 && tracks[2] != null) {
+                                        try {
+                                            tracks[2].clockRateHz = Integer.parseInt(values[1]);
+                                        } catch (Exception ignored) {
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

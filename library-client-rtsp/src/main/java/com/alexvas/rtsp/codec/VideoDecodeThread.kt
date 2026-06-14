@@ -60,6 +60,8 @@ abstract class VideoDecodeThread (
     private var videoDecoderName: String? = null
     private var firstFrameDecoded = false
     @Volatile private var videoFrameRateStabilization = false
+    @Volatile protected var currentVideoSyncMode = VideoSyncMode.LEGACY
+    @Volatile protected var currentAudioClockProvider: AudioClockProvider? = null
 
     fun stopAsync() {
         if (DEBUG) Log.v(TAG, "stopAsync()")
@@ -104,6 +106,16 @@ abstract class VideoDecodeThread (
 
     fun hasVideoFrameRateStabilization(): Boolean {
         return videoFrameRateStabilization
+    }
+
+    open fun setVideoSyncMode(mode: VideoSyncMode) {
+        if (DEBUG) Log.v(TAG, "setVideoSyncMode(mode=$mode)")
+        currentVideoSyncMode = mode
+    }
+
+    open fun setAudioClockProvider(provider: AudioClockProvider?) {
+        if (DEBUG) Log.v(TAG, "setAudioClockProvider(provider=${provider != null})")
+        currentAudioClockProvider = provider
     }
 
     @SuppressLint("UnsafeOptInUsageError")
