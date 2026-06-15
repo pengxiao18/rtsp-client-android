@@ -97,6 +97,14 @@ open class RtspSurfaceView: SurfaceView {
         get() = rtspProcessor.audioStartupDropTimeoutMs
         set(value) { rtspProcessor.audioStartupDropTimeoutMs = value }
 
+    /**
+     * Compensation in microseconds applied only when internal AudioTrack is used as audio master.
+     * Positive value delays video relative to audio.
+     */
+    var internalAudioMasterCompensationUs: Long
+        get() = rtspProcessor.internalAudioMasterCompensationUs
+        set(value) { rtspProcessor.internalAudioMasterCompensationUs = value }
+
     private val surfaceCallback = object: SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) {
             if (DEBUG) Log.v(TAG, "surfaceCreated()")

@@ -55,7 +55,10 @@ class RtspPlayer(
                     videoFrameRateStabilization,
                 )
             }
-        )
+        ).apply {
+            // RtspPlayer only supports external AudioClockProvider as audio master.
+            internalAudioClockSyncEnabled = false
+        }
     }
 
     val statistics: Statistics

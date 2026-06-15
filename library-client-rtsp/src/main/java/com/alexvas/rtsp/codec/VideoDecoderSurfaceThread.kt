@@ -181,7 +181,12 @@ class VideoDecoderSurfaceThread(
         }
         lastAudioPositionUs = audioPosUs
 
-        val audioMasterPtsUs = audioSyncBaseVideoPtsUs + (audioPosUs - audioSyncBaseAudioPosUs)
+        val audioMasterPtsUsRaw = audioSyncBaseVideoPtsUs + (audioPosUs - audioSyncBaseAudioPosUs)
+        val audioMasterPtsUs = if (currentInternalAudioClockEnabled) {
+            audioMasterPtsUsRaw - currentInternalAudioMasterCompensationUs
+        } else {
+            audioMasterPtsUsRaw
+        }
         val avDiffUs = ptsUs - audioMasterPtsUs
         val pendingUs = try {
             provider.getPendingDurationUs()
@@ -191,6 +196,11 @@ class VideoDecoderSurfaceThread(
         val safePendingUs = maxOf(0L, pendingUs)
         val dynamicMaxAheadUs = (safePendingUs + AUDIO_PENDING_HEADROOM_US)
             .coerceIn(VIDEO_MIN_AHEAD_WAIT_US, VIDEO_MAX_AHEAD_WAIT_CAP_US)
+        val earlyRenderMarginUs = if (currentInternalAudioClockEnabled) {
+            INTERNAL_VIDEO_EARLY_RENDER_MARGIN_US
+        } else {
+            VIDEO_EARLY_RENDER_MARGIN_US
+        }
 
         if (avDiffUs < -VIDEO_LATE_DROP_US) {
             mediaCodec.releaseOutputBuffer(outIndex, false)
@@ -198,8 +208,8 @@ class VideoDecoderSurfaceThread(
         }
 
         val clampedAheadUs = minOf(avDiffUs, dynamicMaxAheadUs)
-        if (clampedAheadUs > VIDEO_EARLY_RENDER_MARGIN_US) {
-            val delayNs = (clampedAheadUs - VIDEO_EARLY_RENDER_MARGIN_US) * 1000L
+        if (clampedAheadUs > earlyRenderMarginUs) {
+            val delayNs = (clampedAheadUs - earlyRenderMarginUs) * 1000L
             releaseOutputBufferAfterDelay(mediaCodec, outIndex, nowNs + delayNs)
         } else {
             mediaCodec.releaseOutputBuffer(outIndex, true)
@@ -290,6 +300,7 @@ class VideoDecoderSurfaceThread(
         private const val VIDEO_MAX_AHEAD_WAIT_CAP_US = 400_000L
         private const val AUDIO_PENDING_HEADROOM_US = 30_000L
         private const val VIDEO_EARLY_RENDER_MARGIN_US = 6_000L
+        private const val INTERNAL_VIDEO_EARLY_RENDER_MARGIN_US = 2_000L
         private val COARSE_WAIT_SWITCH_NS = TimeUnit.MILLISECONDS.toNanos(3)
         private val COARSE_WAIT_GUARD_NS = TimeUnit.MILLISECONDS.toNanos(1)
     }

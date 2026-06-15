@@ -70,6 +70,7 @@ class RtspProcessor(
     private var firstFrameRendered = false
     private var hasVideoTrackInCurrentSession = false
     private var audioStartupGateStartNs: Long = Long.MIN_VALUE
+    private var internalAudioClockProvider: AudioClockProvider? = null
     var statistics = Statistics()
         get() {
             videoDecodeThread?.let { decoder ->
@@ -140,9 +141,27 @@ class RtspProcessor(
     var audioClockProvider: AudioClockProvider? = null
         set(value) {
             field = value
-            // Auto-switch sync mode based on audio clock provider presence.
-            videoSyncMode = if (value != null) VideoSyncMode.AUDIO_MASTER else VideoSyncMode.LEGACY
-            videoDecodeThread?.setAudioClockProvider(value)
+            updateVideoSyncBindings()
+        }
+
+    /**
+     * Whether internal AudioTrack clock can be used as audio master when no external
+     * [audioClockProvider] is supplied.
+     */
+    var internalAudioClockSyncEnabled: Boolean = true
+        set(value) {
+            field = value
+            updateVideoSyncBindings()
+        }
+
+    /**
+     * Compensation in microseconds applied only when using internal AudioTrack as audio master.
+     * Positive value delays video relative to audio.
+     */
+    var internalAudioMasterCompensationUs: Long = DEFAULT_INTERNAL_AUDIO_MASTER_COMPENSATION_US
+        set(value) {
+            field = value
+            videoDecodeThread?.setInternalAudioMasterCompensationUs(value)
         }
 
     /**
@@ -152,6 +171,7 @@ class RtspProcessor(
         set(value) {
             field = value
             audioDecodeThread?.setPlayAudioEnabled(value)
+            updateVideoSyncBindings()
         }
 
     /**
@@ -508,10 +528,10 @@ class RtspProcessor(
             videoDecodeThread!!.apply {
                 name = "RTSP video thread [${getUriName()}]"
                 setVideoFrameRateStabilization(videoFrameRateStabilization)
-                setVideoSyncMode(videoSyncMode)
-                setAudioClockProvider(audioClockProvider)
+                setInternalAudioMasterCompensationUs(internalAudioMasterCompensationUs)
                 start()
             }
+            updateVideoSyncBindings()
         }
         if (audioMimeType.isNotEmpty() /*&& checkAudio!!.isChecked*/) {
             Log.i(TAG, "Starting audio decoder with mime type \"$audioMimeType\"")
@@ -523,6 +543,12 @@ class RtspProcessor(
                 audioFrameQueue,
                 initialPlayAudio = audioPlaybackEnabled,
                 initialBufferListener = internalAudioBufferListener,
+                audioClockProviderListener = object : AudioDecodeThread.AudioClockProviderListener {
+                    override fun onAudioClockProviderUpdated(provider: AudioClockProvider?) {
+                        internalAudioClockProvider = provider
+                        updateVideoSyncBindings()
+                    }
+                },
             )
             audioDecodeThread!!.apply {
                 name = "RTSP audio thread [${getUriName()}]"
@@ -530,6 +556,7 @@ class RtspProcessor(
                 setAudioBufferListener(internalAudioBufferListener)
                 start()
             }
+            updateVideoSyncBindings()
         }
     }
 
@@ -538,6 +565,7 @@ class RtspProcessor(
         firstFrameRendered = false
         hasVideoTrackInCurrentSession = false
         audioStartupGateStartNs = Long.MIN_VALUE
+        internalAudioClockProvider = null
         stopDecoders()
         rtspThread = null
 //        uiHandler.post { statusListener?.onRtspStatusDisconnected() }
@@ -574,6 +602,7 @@ class RtspProcessor(
         firstFrameRendered = false
         hasVideoTrackInCurrentSession = false
         audioStartupGateStartNs = Long.MIN_VALUE
+        internalAudioClockProvider = null
         stopDecoders()
     }
 
@@ -593,6 +622,8 @@ class RtspProcessor(
             decoder.joinQuietly()
         }
         audioDecodeThread = null
+        internalAudioClockProvider = null
+        updateVideoSyncBindings()
     }
 
 // Cached values
@@ -732,6 +763,7 @@ class RtspProcessor(
 
         const val DEFAULT_SOCKET_TIMEOUT = 5000
         private const val DEFAULT_AUDIO_STARTUP_DROP_TIMEOUT_MS = 800L
+        private const val DEFAULT_INTERNAL_AUDIO_MASTER_COMPENSATION_US = 50_000L
     }
 
     private fun shouldDropAudioForStartupSync(): Boolean {
@@ -756,6 +788,18 @@ class RtspProcessor(
 
         val elapsedMs = (SystemClock.elapsedRealtimeNanos() - audioStartupGateStartNs) / 1_000_000L
         return elapsedMs < timeoutMs
+    }
+
+    private fun updateVideoSyncBindings() {
+        val useInternalProvider = internalAudioClockSyncEnabled &&
+            audioClockProvider == null &&
+            audioPlaybackEnabled &&
+            internalAudioClockProvider != null
+        val effectiveProvider = audioClockProvider ?: if (useInternalProvider) internalAudioClockProvider else null
+        videoSyncMode = if (effectiveProvider != null) VideoSyncMode.AUDIO_MASTER else VideoSyncMode.LEGACY
+        videoDecodeThread?.setInternalAudioClockEnabled(useInternalProvider)
+        videoDecodeThread?.setInternalAudioMasterCompensationUs(internalAudioMasterCompensationUs)
+        videoDecodeThread?.setAudioClockProvider(effectiveProvider)
     }
 
 }
