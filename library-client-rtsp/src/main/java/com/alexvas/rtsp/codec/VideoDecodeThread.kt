@@ -62,6 +62,8 @@ abstract class VideoDecodeThread (
     @Volatile private var videoFrameRateStabilization = false
     @Volatile protected var currentVideoSyncMode = VideoSyncMode.LEGACY
     @Volatile protected var currentAudioClockProvider: AudioClockProvider? = null
+    @Volatile protected var currentInternalAudioClockEnabled = false
+    @Volatile protected var currentInternalAudioMasterCompensationUs = 50_000L
 
     fun stopAsync() {
         if (DEBUG) Log.v(TAG, "stopAsync()")
@@ -116,6 +118,16 @@ abstract class VideoDecodeThread (
     open fun setAudioClockProvider(provider: AudioClockProvider?) {
         if (DEBUG) Log.v(TAG, "setAudioClockProvider(provider=${provider != null})")
         currentAudioClockProvider = provider
+    }
+
+    open fun setInternalAudioClockEnabled(enabled: Boolean) {
+        if (DEBUG) Log.v(TAG, "setInternalAudioClockEnabled(enabled=$enabled)")
+        currentInternalAudioClockEnabled = enabled
+    }
+
+    open fun setInternalAudioMasterCompensationUs(compensationUs: Long) {
+        if (DEBUG) Log.v(TAG, "setInternalAudioMasterCompensationUs(compensationUs=$compensationUs)")
+        currentInternalAudioMasterCompensationUs = compensationUs
     }
 
     @SuppressLint("UnsafeOptInUsageError")

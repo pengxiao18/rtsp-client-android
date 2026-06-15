@@ -7,10 +7,10 @@
 为了保证：
 
 - `RtspSurfaceView` 现有行为不受影响；
-- `RtspPlayer` 可按需启用“视频跟随音频主时钟”；
+- `RtspPlayer` 仅使用外部 `AudioClockProvider` 作为音频主时钟；
 - RTP 时间戳换算不再固定使用 90k（对音频不准确）；
 
-本次在库层做了可选同步能力和时间戳修正。
+本次在库层做了同步能力扩展、启动阶段门控和时间戳修正。
 
 ---
 
@@ -37,7 +37,8 @@
 说明：
 
 - `RtspPlayer` / `RtspSurfaceView` 默认启用首帧前音频门控（可通过 `audioStartupSyncMode` 调整）。
-- `setAudioClockProvider(...)` 后自动切换到 `AUDIO_MASTER`；清空 provider 时自动回到 `LEGACY`。
+- 设置 `audioClockProvider` 后自动切换到 `AUDIO_MASTER`；清空 provider 时自动回到 `LEGACY`。
+- `RtspPlayer` 已明确禁用“内部 AudioTrack 时钟自动成为 audio master”路径，只支持外部 `AudioClockProvider`。
 
 ### 2) 视频线程增加音频主时钟同步分支
 
@@ -55,18 +56,26 @@
   - 视频过快时延后渲染（上限等待）。
 - 否则走原有逻辑（`LEGACY` / 原稳帧逻辑）。
 
-### 3) `RtspProcessor` / `RtspPlayer` 暴露配置
+### 3) `RtspProcessor` / `RtspPlayer` / `RtspSurfaceView` 配置透传
 
 修改文件：
 
 - `library-client-rtsp/src/main/java/com/alexvas/rtsp/widget/RtspProcessor.kt`
 - `library-client-rtsp/src/main/java/com/alexvas/rtsp/widget/RtspPlayer.kt`
+- `library-client-rtsp/src/main/java/com/alexvas/rtsp/widget/RtspSurfaceView.kt`
 
 新增字段：
 
 - `audioClockProvider`（自动驱动 `AUDIO_MASTER/LEGACY` 切换）
 - `audioStartupSyncMode`
 - `audioStartupDropTimeoutMs`
+- `internalAudioMasterCompensationUs`（仅内部 AudioTrack 时钟链路有效）
+
+补充：
+
+- `RtspProcessor` 支持内部 AudioTrack 时钟（`internalAudioClockSyncEnabled`），用于无外部时钟时的可选音频主同步。
+- `RtspPlayer` 在创建 `RtspProcessor` 后将 `internalAudioClockSyncEnabled = false`，因此只支持外部 `AudioClockProvider`。
+- `RtspSurfaceView` 保持默认行为（可使用内部时钟链路），并可配置 `internalAudioMasterCompensationUs`。
 
 并在视频线程启动时透传。
 
@@ -91,10 +100,12 @@
 
 ---
 
-## 兼容性结论
+## 行为结论（当前版本）
 
 - `RtspSurfaceView` / `RtspPlayer`：默认启用 `DROP_UNTIL_FIRST_VIDEO_FRAME_RENDERED`，减少启动音频先入队导致的初始不同步。
-- `RtspPlayer`：无需再手动设置 `videoSyncMode`，设置 `audioClockProvider` 即自动进入 `AUDIO_MASTER`。
+- `RtspPlayer`：无需手动设置 `videoSyncMode`，设置外部 `audioClockProvider` 即自动进入 `AUDIO_MASTER`。
+- `RtspPlayer`：不再自动使用内部 AudioTrack 时钟作为 audio master。
+- `internalAudioMasterCompensationUs`：对外部 `AudioClockProvider` 链路不生效；仅内部时钟链路有效。
 
 ---
 
@@ -122,6 +133,24 @@ rtspPlayer.audioClockProvider = object : AudioClockProvider {
 rtspPlayer.audioClockProvider = null
 ```
 
+`RtspPlayer` 不支持通过内部 AudioTrack 时钟启用 `AUDIO_MASTER`。如需这一路径，请使用 `RtspSurfaceView` 或在库层调整 `RtspProcessor.internalAudioClockSyncEnabled` 的接入策略。
+
+---
+
+## 内部 AudioTrack 补偿配置（`RtspSurfaceView`/内部链路）
+
+当使用内部 AudioTrack 时钟作为音频主时钟时，可调：
+
+```kotlin
+rtspSurfaceView.internalAudioMasterCompensationUs = 50_000L // 50ms
+```
+
+说明：
+
+- 单位是微秒（us）。
+- 正值表示“视频相对音频再延后”。
+- 该参数不会影响外部 `AudioClockProvider` 路径。
+
 ---
 
 ## 明日验证清单（建议）
@@ -135,9 +164,10 @@ rtspPlayer.audioClockProvider = null
 4. **不同音频参数**（若有条件）：
    - 8k / 16k / 48k；
    - AAC / G711。
-5. **日志建议**：
+5. **日志建议（业务侧）**：
    - 打印 `getCurrentPositionUs`、`getPendingDurationUs`；
-   - 打印首帧渲染时间和首个音频送混时间。
+   - 打印首帧渲染时间和首个音频送混时间；
+   - 当前库已移除调试期 `AUDIO_MASTER` 详细 `Log.i`。
 
 ---
 

@@ -4,6 +4,7 @@ import android.media.*
 import android.os.Process
 import android.util.Log
 import java.nio.ByteBuffer
+import kotlin.math.max
 
 
 class AudioDecodeThread(
@@ -14,6 +15,7 @@ class AudioDecodeThread(
     private val audioFrameQueue: AudioFrameQueue,
     private val initialPlayAudio: Boolean = true,
     private val initialBufferListener: AudioBufferListener? = null,
+    private val audioClockProviderListener: AudioClockProviderListener? = null,
 ) : Thread() {
 
     interface AudioBufferListener {
@@ -27,10 +29,46 @@ class AudioDecodeThread(
         ) {}
     }
 
+    interface AudioClockProviderListener {
+        fun onAudioClockProviderUpdated(provider: AudioClockProvider?)
+    }
+
     private var isRunning = true
     @Volatile private var playAudio = initialPlayAudio
     @Volatile private var bufferListener: AudioBufferListener? = initialBufferListener
     @Volatile private var audioTrack: AudioTrack? = null
+    @Volatile private var writtenFramesTotal: Long = 0L
+    @Volatile private var mappedWrittenFrames: Long = Long.MIN_VALUE
+    @Volatile private var mappedWrittenMediaPtsUs: Long = Long.MIN_VALUE
+    @Volatile private var lastKnownPlayedFrames: Long = 0L
+    @Volatile private var playbackHeadWrapCount: Long = 0L
+    @Volatile private var lastPlaybackHeadPos32: Long = 0L
+    private val audioTimestamp = AudioTimestamp()
+    private val internalAudioClockProvider = object : AudioClockProvider {
+        override fun getCurrentPositionUs(): Long {
+            val mediaPtsUs = mappedWrittenMediaPtsUs
+            val writeFrames = mappedWrittenFrames
+            val track = audioTrack
+            if (track == null || mediaPtsUs == Long.MIN_VALUE || writeFrames == Long.MIN_VALUE) {
+                return 0L
+            }
+            val playedFrames = getPlayedFrames(track)
+            val pendingFrames = max(0L, writeFrames - playedFrames)
+            val audioPosUs = mediaPtsUs - framesToDurationUs(pendingFrames)
+            return audioPosUs
+        }
+
+        override fun getPendingDurationUs(): Long {
+            val writeFrames = mappedWrittenFrames
+            val track = audioTrack
+            if (track == null || writeFrames == Long.MIN_VALUE) {
+                return 0L
+            }
+            val playedFrames = getPlayedFrames(track)
+            val pendingFrames = max(0L, writeFrames - playedFrames)
+            return framesToDurationUs(pendingFrames)
+        }
+    }
 
     fun stopAsync() {
         if (DEBUG) Log.v(TAG, "stopAsync()")
@@ -52,11 +90,15 @@ class AudioDecodeThread(
                         track.pause()
                         track.flush()
                     }
+                    resetClockMapping()
                 }
             } catch (t: Throwable) {
                 Log.w(TAG, "Unable to toggle audio playback state", t)
             }
         }
+        audioClockProviderListener?.onAudioClockProviderUpdated(
+            if (enabled) internalAudioClockProvider else null
+        )
     }
 
     fun setAudioBufferListener(listener: AudioBufferListener?) {
@@ -155,9 +197,13 @@ class AudioDecodeThread(
                 AudioTrack.MODE_STREAM,
                 0)
         audioTrack = track
+        resetClockMapping()
         if (playAudio) {
             track.play()
         }
+        audioClockProviderListener?.onAudioClockProviderUpdated(
+            if (playAudio) internalAudioClockProvider else null
+        )
 
         val bufferInfo = MediaCodec.BufferInfo()
         while (isRunning) {
@@ -219,7 +265,10 @@ class AudioDecodeThread(
                                     channelCount
                                 )
                                 if (playAudio) {
-                                    track.write(chunk, 0, chunk.size)
+                                    val writtenBytes = track.write(chunk, 0, chunk.size)
+                                    if (writtenBytes > 0) {
+                                        updateClockMapping(bufferInfo.presentationTimeUs, writtenBytes)
+                                    }
                                 }
                             }
                             decoder.releaseOutputBuffer(outIndex, false)
@@ -243,6 +292,8 @@ class AudioDecodeThread(
         track.flush()
         track.release()
         audioTrack = null
+        audioClockProviderListener?.onAudioClockProviderUpdated(null)
+        resetClockMapping()
 
         try {
             decoder.stop()
@@ -286,6 +337,64 @@ class AudioDecodeThread(
             extraData[1] = (extraDataAac and 0xff).toByte()         // low byte
             return extraData
         }
+    }
+
+    private fun resetClockMapping() {
+        writtenFramesTotal = 0L
+        mappedWrittenFrames = Long.MIN_VALUE
+        mappedWrittenMediaPtsUs = Long.MIN_VALUE
+        lastKnownPlayedFrames = 0L
+        playbackHeadWrapCount = 0L
+        lastPlaybackHeadPos32 = 0L
+    }
+
+    private fun updateClockMapping(presentationTimeUs: Long, writtenBytes: Int) {
+        val bytesPerFrame = channelCount * 2
+        if (bytesPerFrame <= 0 || writtenBytes <= 0) {
+            return
+        }
+        val writtenFrames = writtenBytes / bytesPerFrame
+        if (writtenFrames <= 0) {
+            return
+        }
+        val beforeWriteFrames = writtenFramesTotal
+        val afterWriteFrames = beforeWriteFrames + writtenFrames
+        writtenFramesTotal = afterWriteFrames
+        mappedWrittenFrames = afterWriteFrames
+        mappedWrittenMediaPtsUs = presentationTimeUs + framesToDurationUs(writtenFrames.toLong())
+    }
+
+    private fun getPlayedFrames(track: AudioTrack): Long {
+        // Prefer platform timestamp when available; fallback to playback head with 32-bit unwrap.
+        val timestampFrames = try {
+            if (track.playState == AudioTrack.PLAYSTATE_PLAYING && track.getTimestamp(audioTimestamp)) {
+                audioTimestamp.framePosition
+            } else {
+                Long.MIN_VALUE
+            }
+        } catch (_: Throwable) {
+            Long.MIN_VALUE
+        }
+        if (timestampFrames != Long.MIN_VALUE) {
+            lastKnownPlayedFrames = max(lastKnownPlayedFrames, timestampFrames)
+            return lastKnownPlayedFrames
+        }
+
+        val head32 = track.playbackHeadPosition.toLong() and 0xFFFFFFFFL
+        if (head32 < lastPlaybackHeadPos32) {
+            playbackHeadWrapCount++
+        }
+        lastPlaybackHeadPos32 = head32
+        val unwrapped = (playbackHeadWrapCount shl 32) + head32
+        lastKnownPlayedFrames = max(lastKnownPlayedFrames, unwrapped)
+        return lastKnownPlayedFrames
+    }
+
+    private fun framesToDurationUs(frames: Long): Long {
+        if (sampleRate <= 0) {
+            return 0L
+        }
+        return (frames * 1_000_000L) / sampleRate.toLong()
     }
 
 }
