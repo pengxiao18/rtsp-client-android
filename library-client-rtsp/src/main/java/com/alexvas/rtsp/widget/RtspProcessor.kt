@@ -145,23 +145,13 @@ class RtspProcessor(
         }
 
     /**
-     * Whether internal AudioTrack clock can be used as audio master when no external
-     * [audioClockProvider] is supplied.
+     * Enables/disables AUTO compensation when internal AudioTrack clock is used as audio master.
+     * Enabled by default.
      */
-    var internalAudioClockSyncEnabled: Boolean = true
+    var internalAudioAutoCompensationEnabled: Boolean = true
         set(value) {
             field = value
-            updateVideoSyncBindings()
-        }
-
-    /**
-     * Compensation in microseconds applied only when using internal AudioTrack as audio master.
-     * Positive value delays video relative to audio.
-     */
-    var internalAudioMasterCompensationUs: Long = DEFAULT_INTERNAL_AUDIO_MASTER_COMPENSATION_US
-        set(value) {
-            field = value
-            videoDecodeThread?.setInternalAudioMasterCompensationUs(value)
+            videoDecodeThread?.setInternalAudioAutoCompensationEnabled(value)
         }
 
     /**
@@ -528,7 +518,7 @@ class RtspProcessor(
             videoDecodeThread!!.apply {
                 name = "RTSP video thread [${getUriName()}]"
                 setVideoFrameRateStabilization(videoFrameRateStabilization)
-                setInternalAudioMasterCompensationUs(internalAudioMasterCompensationUs)
+                setInternalAudioAutoCompensationEnabled(internalAudioAutoCompensationEnabled)
                 start()
             }
             updateVideoSyncBindings()
@@ -763,7 +753,6 @@ class RtspProcessor(
 
         const val DEFAULT_SOCKET_TIMEOUT = 5000
         private const val DEFAULT_AUDIO_STARTUP_DROP_TIMEOUT_MS = 800L
-        private const val DEFAULT_INTERNAL_AUDIO_MASTER_COMPENSATION_US = 50_000L
     }
 
     private fun shouldDropAudioForStartupSync(): Boolean {
@@ -791,14 +780,13 @@ class RtspProcessor(
     }
 
     private fun updateVideoSyncBindings() {
-        val useInternalProvider = internalAudioClockSyncEnabled &&
-            audioClockProvider == null &&
+        val useInternalProvider = audioClockProvider == null &&
             audioPlaybackEnabled &&
             internalAudioClockProvider != null
         val effectiveProvider = audioClockProvider ?: if (useInternalProvider) internalAudioClockProvider else null
         videoSyncMode = if (effectiveProvider != null) VideoSyncMode.AUDIO_MASTER else VideoSyncMode.LEGACY
         videoDecodeThread?.setInternalAudioClockEnabled(useInternalProvider)
-        videoDecodeThread?.setInternalAudioMasterCompensationUs(internalAudioMasterCompensationUs)
+        videoDecodeThread?.setInternalAudioAutoCompensationEnabled(internalAudioAutoCompensationEnabled)
         videoDecodeThread?.setAudioClockProvider(effectiveProvider)
     }
 

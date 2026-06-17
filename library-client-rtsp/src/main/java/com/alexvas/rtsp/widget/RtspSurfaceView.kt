@@ -77,6 +77,11 @@ open class RtspSurfaceView: SurfaceView {
         get() = rtspProcessor.audioPlaybackEnabled
         set(value) { rtspProcessor.audioPlaybackEnabled = value }
 
+    /** Enables/disables internal audio AUTO compensation. Enabled by default. */
+    var internalAudioAutoCompensationEnabled: Boolean
+        get() = rtspProcessor.internalAudioAutoCompensationEnabled
+        set(value) { rtspProcessor.internalAudioAutoCompensationEnabled = value }
+
     /** Listener receiving decoded PCM audio buffers. */
     var audioBufferListener: AudioBufferListener?
         get() = rtspProcessor.audioBufferListener
@@ -96,14 +101,6 @@ open class RtspSurfaceView: SurfaceView {
     var audioStartupDropTimeoutMs: Long
         get() = rtspProcessor.audioStartupDropTimeoutMs
         set(value) { rtspProcessor.audioStartupDropTimeoutMs = value }
-
-    /**
-     * Compensation in microseconds applied only when internal AudioTrack is used as audio master.
-     * Positive value delays video relative to audio.
-     */
-    var internalAudioMasterCompensationUs: Long
-        get() = rtspProcessor.internalAudioMasterCompensationUs
-        set(value) { rtspProcessor.internalAudioMasterCompensationUs = value }
 
     private val surfaceCallback = object: SurfaceHolder.Callback {
         override fun surfaceCreated(holder: SurfaceHolder) {
