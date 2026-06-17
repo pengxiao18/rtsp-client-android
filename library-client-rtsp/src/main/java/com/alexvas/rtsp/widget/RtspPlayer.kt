@@ -55,10 +55,7 @@ class RtspPlayer(
                     videoFrameRateStabilization,
                 )
             }
-        ).apply {
-            // RtspPlayer only supports external AudioClockProvider as audio master.
-            internalAudioClockSyncEnabled = false
-        }
+        )
     }
 
     val statistics: Statistics
@@ -89,6 +86,11 @@ class RtspPlayer(
     var audioPlaybackEnabled: Boolean
         get() = rtspProcessor.audioPlaybackEnabled
         set(value) { rtspProcessor.audioPlaybackEnabled = value }
+
+    /** Enables/disables internal audio AUTO compensation. Enabled by default. */
+    var internalAudioAutoCompensationEnabled: Boolean
+        get() = rtspProcessor.internalAudioAutoCompensationEnabled
+        set(value) { rtspProcessor.internalAudioAutoCompensationEnabled = value }
 
     /**
      * Optional external audio clock.

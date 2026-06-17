@@ -47,6 +47,7 @@ class VideoDecoderSurfaceThread(
     private var audioSyncBaseVideoPtsUs: Long = Long.MIN_VALUE
     private var audioSyncBaseAudioPosUs: Long = Long.MIN_VALUE
     private var lastAudioPositionUs: Long = Long.MIN_VALUE
+    private var dynamicInternalCompensationUs: Long = Long.MIN_VALUE
 
     init {
         setVideoFrameRateStabilization(videoFrameRateStabilization)
@@ -73,6 +74,13 @@ class VideoDecoderSurfaceThread(
         if (provider == null) {
             resetAudioSyncTiming()
         }
+    }
+
+    override fun setInternalAudioAutoCompensationEnabled(enabled: Boolean) {
+        if (currentInternalAudioAutoCompensationEnabled != enabled) {
+            dynamicInternalCompensationUs = Long.MIN_VALUE
+        }
+        super.setInternalAudioAutoCompensationEnabled(enabled)
     }
 
     private fun releaseOutputBufferWithFrameRateStabilization(
@@ -181,18 +189,23 @@ class VideoDecoderSurfaceThread(
         }
         lastAudioPositionUs = audioPosUs
 
-        val audioMasterPtsUsRaw = audioSyncBaseVideoPtsUs + (audioPosUs - audioSyncBaseAudioPosUs)
-        val audioMasterPtsUs = if (currentInternalAudioClockEnabled) {
-            audioMasterPtsUsRaw - currentInternalAudioMasterCompensationUs
-        } else {
-            audioMasterPtsUsRaw
-        }
-        val avDiffUs = ptsUs - audioMasterPtsUs
         val pendingUs = try {
             provider.getPendingDurationUs()
         } catch (_: Throwable) {
             -1L
         }
+        val audioMasterPtsUsRaw = audioSyncBaseVideoPtsUs + (audioPosUs - audioSyncBaseAudioPosUs)
+        val audioMasterPtsUs = if (currentInternalAudioClockEnabled) {
+            val compensationUs = if (currentInternalAudioAutoCompensationEnabled) {
+                resolveAutoInternalCompensationUs(pendingUs = pendingUs)
+            } else {
+                0L
+            }
+            audioMasterPtsUsRaw - compensationUs
+        } else {
+            audioMasterPtsUsRaw
+        }
+        val avDiffUs = ptsUs - audioMasterPtsUs
         val safePendingUs = maxOf(0L, pendingUs)
         val dynamicMaxAheadUs = (safePendingUs + AUDIO_PENDING_HEADROOM_US)
             .coerceIn(VIDEO_MIN_AHEAD_WAIT_US, VIDEO_MAX_AHEAD_WAIT_CAP_US)
@@ -287,12 +300,38 @@ class VideoDecoderSurfaceThread(
         audioSyncBaseVideoPtsUs = Long.MIN_VALUE
         audioSyncBaseAudioPosUs = Long.MIN_VALUE
         lastAudioPositionUs = Long.MIN_VALUE
+        dynamicInternalCompensationUs = Long.MIN_VALUE
+    }
+
+    private fun resolveAutoInternalCompensationUs(pendingUs: Long): Long {
+        val safePendingUs = max(0L, pendingUs)
+        // Target compensation follows device/runtime audio pipeline depth with a small safety headroom.
+        val desiredUs = (safePendingUs + AUTO_COMPENSATION_HEADROOM_US)
+            .coerceIn(AUTO_COMPENSATION_MIN_US, AUTO_COMPENSATION_MAX_US)
+
+        if (dynamicInternalCompensationUs == Long.MIN_VALUE) {
+            dynamicInternalCompensationUs = desiredUs
+            return dynamicInternalCompensationUs
+        }
+
+        val currentUs = dynamicInternalCompensationUs
+        val alpha =
+            if (desiredUs > currentUs) AUTO_COMPENSATION_ALPHA_UP else AUTO_COMPENSATION_ALPHA_DOWN
+        val blendedUs = (currentUs + ((desiredUs - currentUs) * alpha)).toLong()
+        val deltaUs = (blendedUs - currentUs)
+            .coerceIn(-AUTO_COMPENSATION_MAX_STEP_US, AUTO_COMPENSATION_MAX_STEP_US)
+        dynamicInternalCompensationUs = (currentUs + deltaUs)
+            .coerceIn(AUTO_COMPENSATION_MIN_US, AUTO_COMPENSATION_MAX_US)
+        return dynamicInternalCompensationUs
     }
 
     companion object {
+        // Legacy frame-rate stabilization thresholds.
         private val FRAME_DROP_THRESHOLD_NS = TimeUnit.MILLISECONDS.toNanos(80)
         private val MIN_FRAME_SPACING_NS = TimeUnit.MILLISECONDS.toNanos(1)
         private val RENDER_EARLY_MARGIN_NS = TimeUnit.MILLISECONDS.toNanos(2)
+
+        // Audio clock sanity/sync constraints.
         private const val INVALID_AUDIO_CLOCK_US = 0L
         private const val AUDIO_CLOCK_BACKWARD_TOLERANCE_US = 30_000L
         private const val VIDEO_LATE_DROP_US = 160_000L
@@ -301,6 +340,23 @@ class VideoDecoderSurfaceThread(
         private const val AUDIO_PENDING_HEADROOM_US = 30_000L
         private const val VIDEO_EARLY_RENDER_MARGIN_US = 6_000L
         private const val INTERNAL_VIDEO_EARLY_RENDER_MARGIN_US = 2_000L
+
+        // AUTO internal compensation bounds (in us) for cross-device stability.
+        private const val AUTO_COMPENSATION_MIN_US = 15_000L
+        private const val AUTO_COMPENSATION_MAX_US = 250_000L
+
+        // Extra delay on top of pending audio to avoid rendering video too early.
+        private const val AUTO_COMPENSATION_HEADROOM_US = 25_000L
+
+        // Per-update slew-rate limit and smoothing factors.
+        // Upward adaptation uses a larger alpha to catch up quickly when latency increases.
+        private const val AUTO_COMPENSATION_MAX_STEP_US = 4_000L
+        private const val AUTO_COMPENSATION_ALPHA_UP = 0.20
+
+        // Downward adaptation is slower to avoid oscillation and visual jitter.
+        private const val AUTO_COMPENSATION_ALPHA_DOWN = 0.08
+
+        // Two-phase wait strategy for accurate release timing without busy spinning.
         private val COARSE_WAIT_SWITCH_NS = TimeUnit.MILLISECONDS.toNanos(3)
         private val COARSE_WAIT_GUARD_NS = TimeUnit.MILLISECONDS.toNanos(1)
     }
