@@ -16,6 +16,7 @@ class AudioDecodeThread(
     private val initialPlayAudio: Boolean = true,
     private val initialBufferListener: AudioBufferListener? = null,
     private val audioClockProviderListener: AudioClockProviderListener? = null,
+    private val shouldDropDecodedAudio: (() -> Boolean)? = null,
 ) : Thread() {
 
     interface AudioBufferListener {
@@ -270,7 +271,7 @@ class AudioDecodeThread(
                             }
                             byteBuffer?.clear()
 
-                            if (chunk.isNotEmpty()) {
+                            if (chunk.isNotEmpty() && shouldDropDecodedAudio?.invoke() != true) {
                                 bufferListener?.onAudioBufferAvailable(
                                     chunk,
                                     0,

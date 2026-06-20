@@ -483,9 +483,6 @@ class RtspProcessor(
             pcmEncoding: Int,
             sampleMimeType: String,
         ) {
-            if (shouldDropAudioForStartupSync()) {
-                return
-            }
             audioBufferListener?.onAudioBufferAvailable(
                 data,
                 offset,
@@ -543,6 +540,7 @@ class RtspProcessor(
                         updateVideoSyncBindings()
                     }
                 },
+                shouldDropDecodedAudio = { shouldDropAudioForStartupSync() },
             )
             audioDecodeThread!!.apply {
                 name = "RTSP audio thread [${getUriName()}]"
