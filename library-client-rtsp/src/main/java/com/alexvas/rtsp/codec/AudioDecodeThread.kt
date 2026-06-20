@@ -26,6 +26,8 @@ class AudioDecodeThread(
             presentationTimeUs: Long,
             sampleRate: Int,
             channelCount: Int,
+            pcmEncoding: Int,
+            sampleMimeType: String,
         ) {}
     }
 
@@ -206,6 +208,8 @@ class AudioDecodeThread(
         )
 
         val bufferInfo = MediaCodec.BufferInfo()
+        var currentPcmEncoding = outAudio
+        var currentSampleMimeType = MediaFormat.MIMETYPE_AUDIO_RAW
         while (isRunning) {
             val inIndex: Int = decoder.dequeueInputBuffer(10000L)
             if (inIndex >= 0) {
@@ -243,7 +247,18 @@ class AudioDecodeThread(
 //                Log.w(TAG, "outIndex: ${outIndex}")
                 if (!isRunning) break
                 when (val outIndex = decoder.dequeueOutputBuffer(bufferInfo, 10000L)) {
-                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> Log.d(TAG, "Decoder format changed: ${decoder.outputFormat}")
+                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        val outputFormat = decoder.outputFormat
+                        currentPcmEncoding =
+                            if (outputFormat.containsKey(MediaFormat.KEY_PCM_ENCODING)) {
+                                outputFormat.getInteger(MediaFormat.KEY_PCM_ENCODING)
+                            } else {
+                                outAudio
+                            }
+                        currentSampleMimeType =
+                            outputFormat.getString(MediaFormat.KEY_MIME) ?: MediaFormat.MIMETYPE_AUDIO_RAW
+                        Log.d(TAG, "Decoder format changed: $outputFormat")
+                    }
                     MediaCodec.INFO_TRY_AGAIN_LATER -> if (DEBUG) Log.d(TAG, "No output from decoder available")
                     else -> {
                         if (outIndex >= 0) {
@@ -262,7 +277,9 @@ class AudioDecodeThread(
                                     chunk.size,
                                     bufferInfo.presentationTimeUs,
                                     sampleRate,
-                                    channelCount
+                                    channelCount,
+                                    currentPcmEncoding,
+                                    currentSampleMimeType,
                                 )
                                 if (playAudio) {
                                     val writtenBytes = track.write(chunk, 0, chunk.size)

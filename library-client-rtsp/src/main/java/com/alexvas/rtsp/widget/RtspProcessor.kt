@@ -480,6 +480,8 @@ class RtspProcessor(
             presentationTimeUs: Long,
             sampleRate: Int,
             channelCount: Int,
+            pcmEncoding: Int,
+            sampleMimeType: String,
         ) {
             if (shouldDropAudioForStartupSync()) {
                 return
@@ -490,7 +492,9 @@ class RtspProcessor(
                 length,
                 presentationTimeUs,
                 sampleRate,
-                channelCount
+                channelCount,
+                pcmEncoding,
+                sampleMimeType,
             )
         }
     }

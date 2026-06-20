@@ -63,7 +63,9 @@ class LiveFragment2 : Fragment() {
                 length: Int,
                 presentationTimeUs: Long,
                 sampleRate: Int,
-                channelCount: Int
+                channelCount: Int,
+                pcmEncoding: Int,
+                sampleMimeType: String,
             ) {
 
             }
